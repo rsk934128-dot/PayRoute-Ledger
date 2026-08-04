@@ -1,0 +1,24 @@
+{
+  "entities": {
+    "billPayments": {
+      "title": "Electricity Bill Payments",
+      "description": "Stores electricity utility bill payments (NESCO Prepaid, DESCO, DPDC, BREB)",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "userEmail": { "type": "string" },
+        "biller": { "type": "string" },
+        "meterId": { "type": "string" },
+        "billNo": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "txnId": { "type": "string" },
+        "token": { "type": "string" },
+        "paidAt": { "type": "string" },
+        "status": { "type": "string" },
+        "smsReceipt": { "type": "string" }
+      },
+      "required": ["userId", "biller", "amount", "txnId"]
+    }
+  }
+}

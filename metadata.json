@@ -1,0 +1,6 @@
+{
+  "name": "PayRoute Ledger",
+  "description": "Automated Ledger Transfer & Payment Routing System with ACID transactions, gateway failover, transaction queues, and Google Drive audit statements.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

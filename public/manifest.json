@@ -1,0 +1,25 @@
+{
+  "short_name": "PayRoute",
+  "name": "PayRoute - Financial Engine & Utility Billing",
+  "description": "Automated Payment Routing Engine with Electricity Bill Payments (NESCO, DESCO, DPDC, BREB), Firebase Firestore Database & Gemini AI Fraud Detection",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "192x192 512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.jpg",
+      "sizes": "64x64 32x32 24x24 16x16",
+      "type": "image/jpeg"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "categories": ["finance", "utilities", "business"]
+}
