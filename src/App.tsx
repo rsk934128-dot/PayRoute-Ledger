@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   Wallet, 
   PaymentRail, 
@@ -9,6 +9,11 @@ import {
   AnomalyAlert 
 } from './types';
 import { Navbar } from './components/Navbar';
+import { 
+  requestNotificationPermission, 
+  registerServiceWorker, 
+  sendNotification 
+} from './lib/notifications';
 import { WalletLedgerView } from './components/WalletLedgerView';
 import { SmartRoutingView } from './components/SmartRoutingView';
 import { AsyncQueueView } from './components/AsyncQueueView';
@@ -54,6 +59,7 @@ export default function App() {
   // Auto-Sync & Real-Time Sync State
   const [autoSync, setAutoSync] = useState<boolean>(true);
   const [lastSyncedAt, setLastSyncedAt] = useState<Date | null>(null);
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(false);
 
   // Google Drive Connection State
   const [driveConnected, setDriveConnected] = useState<boolean>(false);
@@ -62,21 +68,81 @@ export default function App() {
   const [isGmailModalOpen, setIsGmailModalOpen] = useState<boolean>(false);
 
   const [isLoading, setIsLoading] = useState(true);
+  const prevTransactionsRef = useRef<Transaction[]>([]);
+  const isFirstLoadRef = useRef(true);
+
+  const handleToggleNotifications = async () => {
+    if (notificationsEnabled) {
+      // Browsers don't support revoking permission programmatically, 
+      // but we can stop sending them in our app logic.
+      setNotificationsEnabled(false);
+    } else {
+      const permission = await requestNotificationPermission();
+      if (permission === 'granted') {
+        setNotificationsEnabled(true);
+        sendNotification({
+          title: lang === 'bn' ? 'নোটিফিকেশন সক্রিয়!' : 'Notifications Enabled!',
+          body: lang === 'bn' 
+            ? 'এখন থেকে আপনি পেমেন্ট অ্যালার্ট পাবেন।' 
+            : 'You will now receive real-time payment alerts.',
+        });
+      }
+    }
+  };
 
   // Fetch Overview & Admin Data
-  const fetchData = async () => {
+  const fetchData = useCallback(async (retries = 3) => {
     try {
       const res = await fetch('/api/ledger/overview');
       if (res.ok) {
         const data = await res.json();
+        console.log('Fetched ledger data:', data);
+        const newTxList = data.transactions || [];
+        
+        // Background alert logic for polled transactions
+        if (notificationsEnabled && !isFirstLoadRef.current) {
+          const newTxs = newTxList.filter(
+            (tx: Transaction) => !prevTransactionsRef.current.some(prev => prev.id === tx.id)
+          );
+          
+          newTxs.forEach((tx: Transaction) => {
+            if (tx.status === 'SUCCESS') {
+              sendNotification({
+                title: lang === 'bn' ? 'পেমেন্ট সম্পন্ন!' : 'Payment Completed!',
+                body: lang === 'bn'
+                  ? `${tx.amount} ${tx.currency} ${tx.senderName} থেকে প্রাপ্ত হয়েছে।`
+                  : `${tx.amount} ${tx.currency} received from ${tx.senderName}.`,
+                tag: `tx-${tx.id}`
+              });
+            } else if (tx.status === 'FAILED') {
+              sendNotification({
+                title: lang === 'bn' ? 'পেমেন্ট ব্যর্থ!' : 'Payment Failed!',
+                body: lang === 'bn'
+                  ? `${tx.amount} ${tx.currency} ট্রান্সফার ব্যর্থ হয়েছে।`
+                  : `Transfer of ${tx.amount} ${tx.currency} failed.`,
+                tag: `tx-fail-${tx.id}`
+              });
+            }
+          });
+        }
+
         setWallets(data.wallets || []);
         setRails(data.rails || []);
-        setTransactions(data.transactions || []);
+        setTransactions(newTxList);
         setLedgerEntries(data.ledgerEntries || []);
         setQueueTasks(data.queueTasks || []);
         setWebhookEvents(data.webhookEvents || []);
         setAnomalyAlerts(data.anomalyAlerts || []);
         setLastSyncedAt(new Date());
+        
+        prevTransactionsRef.current = newTxList;
+        isFirstLoadRef.current = false;
+      } else {
+        const text = await res.text();
+        console.error(`Failed to fetch ledger overview: HTTP ${res.status}`, text.slice(0, 100));
+        if (retries > 0) {
+          setTimeout(() => fetchData(retries - 1), 2000);
+        }
       }
 
       const adminRes = await fetch('/api/admin/profile');
@@ -87,11 +153,14 @@ export default function App() {
         }
       }
     } catch (err) {
-      console.error('Failed to fetch ledger overview:', err);
+      console.error('Fetch exception in ledger overview:', err);
+      if (retries > 0) {
+        setTimeout(() => fetchData(retries - 1), 2000);
+      }
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [notificationsEnabled, lang]);
 
   // Auto-Sync 60s Interval Effect to keep Ledger view updated in real-time
   useEffect(() => {
@@ -121,6 +190,12 @@ export default function App() {
   useEffect(() => {
     fetchData();
     checkGoogleDriveStatus();
+    registerServiceWorker();
+
+    // Check existing notification permission
+    if ('Notification' in window && Notification.permission === 'granted') {
+      setNotificationsEnabled(true);
+    }
 
     // Listen for OAuth message from child popup window if opened
     const handleMessage = (event: MessageEvent) => {
@@ -176,9 +251,32 @@ export default function App() {
     const data = await res.json();
     if (res.ok && data.success) {
       fetchData(); // Refresh state
+      
+      if (notificationsEnabled) {
+        sendNotification({
+          title: lang === 'bn' ? 'ট্রান্সফার সফল!' : 'Transfer Successful!',
+          body: lang === 'bn' 
+            ? `৳${transferData.amount.toLocaleString()} সফলভাবে পাঠানো হয়েছে।` 
+            : `৳${transferData.amount.toLocaleString()} has been transferred successfully.`,
+          tag: 'transfer-success'
+        });
+      }
+      
       return { success: true };
     } else {
-      return { success: false, error: data.error || 'Transfer failed.' };
+      const errorMsg = data.error || 'Transfer failed.';
+      
+      if (notificationsEnabled) {
+        sendNotification({
+          title: lang === 'bn' ? 'ট্রান্সফার ব্যর্থ!' : 'Transfer Failed!',
+          body: lang === 'bn' 
+            ? `দুঃখিত, ৳${transferData.amount.toLocaleString()} পাঠানো সম্ভব হয়নি। কারণ: ${errorMsg}` 
+            : `Sorry, ৳${transferData.amount.toLocaleString()} transfer failed. Reason: ${errorMsg}`,
+          tag: 'transfer-error'
+        });
+      }
+
+      return { success: false, error: errorMsg };
     }
   };
 
@@ -265,6 +363,8 @@ export default function App() {
         autoSync={autoSync}
         setAutoSync={setAutoSync}
         lastSyncedAt={lastSyncedAt}
+        notificationsEnabled={notificationsEnabled}
+        onToggleNotifications={handleToggleNotifications}
       />
 
       {/* Main Content Workspace */}

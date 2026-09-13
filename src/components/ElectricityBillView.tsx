@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { ElectricityBillPayment, PaymentRail } from '../types';
+import { sendNotification } from '../lib/notifications';
 import { 
   auth, 
   googleProvider, 
@@ -198,6 +199,14 @@ export const ElectricityBillView: React.FC<ElectricityBillViewProps> = ({ lang, 
         if (onPaymentProcessed) {
           onPaymentProcessed(amountBDT, paymentRail);
         }
+
+        sendNotification({
+          title: lang === 'bn' ? 'বিদ্যুৎ বিল সফল!' : 'Electricity Bill Successful!',
+          body: lang === 'bn' 
+            ? `${billerNameMap[biller] || biller} এর জন্য ৳${amountBDT} পরিশোধ করা হয়েছে।` 
+            : `৳${amountBDT} has been paid for ${billerNameMap[biller] || biller}.`,
+          tag: 'bill-payment'
+        });
       } catch (err: any) {
         console.warn('Firestore write failed, creating local record:', err);
         const fullPayment: ElectricityBillPayment = { id: `LOCAL-${Date.now()}`, ...newPaymentDoc };

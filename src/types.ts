@@ -267,7 +267,7 @@ export interface GmailNotificationLog {
   error?: string;
 }
 
-export interface ElectricityBillPayment {
+export type ElectricityBillPayment = {
   id: string;
   userId?: string;
   userEmail?: string;
@@ -282,5 +282,23 @@ export interface ElectricityBillPayment {
   paidAt: string;
   status: 'PAID' | 'PROCESSING' | 'FAILED';
   smsReceipt: string;
+}
+
+export type RecurringFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+export interface RecurringTransfer {
+  id: string;
+  senderWalletId: string;
+  senderName: string;
+  receiverWalletId: string;
+  receiverName: string;
+  amount: number;
+  currency: Currency;
+  frequency: RecurringFrequency;
+  startDate: string;
+  nextExecutionDate: string;
+  status: 'ACTIVE' | 'PAUSED' | 'CANCELLED';
+  description: string;
+  createdAt: string;
 }
 

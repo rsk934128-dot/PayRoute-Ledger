@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import path from 'path';
 import crypto from 'crypto';
@@ -21,16 +22,27 @@ import {
   PassportEndorsement,
   VirtualCard,
   GmailNotificationLog
-} from './src/types.js';
+} from './src/types';
 import { 
   INITIAL_WALLETS, 
   INITIAL_PAYMENT_RAILS, 
   INITIAL_TRANSACTIONS, 
   INITIAL_LEDGER_ENTRIES 
-} from './src/data/initialData.js';
+} from './src/data/initialData';
 
 const app = express();
 app.use(express.json());
+
+// Simple Request Logger
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+  next();
+});
+
+// API Routes should be handled before Vite middleware
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+});
 
 // Google OAuth Helper function for Workspace APIs (Gmail)
 export function getOAuth2Client(req: Request): any {
@@ -2123,6 +2135,21 @@ app.get('/api/gmail/logs', (req: Request, res: Response) => {
   res.json({ logs: gmailNotificationLogs });
 });
 
+// 404 Handler for API routes to prevent falling through to SPA fallback
+app.use('/api', (req, res) => {
+  res.status(404).json({ error: `API route not found: ${req.method} ${req.url}` });
+});
+
+// Global Error Handler
+app.use((err: any, req: Request, res: Response, next: any) => {
+  console.error('Unhandled Server Error:', err);
+  res.status(500).json({ 
+    error: 'Internal Server Error', 
+    message: err.message,
+    stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+  });
+});
+
 
 // ==========================================
 // VITE MIDDLEWARE & SERVE STATIC BUILD
@@ -2147,4 +2174,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch(err => {
+  console.error("CRITICAL: Server failed to start:", err);
+  process.exit(1);
+});

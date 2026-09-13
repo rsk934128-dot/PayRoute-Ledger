@@ -1,5 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import QRCode from 'qrcode';
+import { 
+  BarChart, 
+  Bar, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  Cell
+} from 'recharts';
 import { 
   Wallet, 
   Transaction, 
@@ -11,6 +23,7 @@ import {
   Wallet as WalletIcon, 
   ArrowUpRight, 
   ArrowDownLeft, 
+  ArrowRight,
   ShieldCheck, 
   Lock, 
   Hash, 
@@ -41,8 +54,10 @@ import {
   Camera,
   Share2,
   Smartphone,
+  Gift,
   Upload,
-  Sparkles
+  Sparkles,
+  TrendingUp
 } from 'lucide-react';
 
 interface WalletLedgerViewProps {
@@ -60,6 +75,20 @@ interface WalletLedgerViewProps {
     idempotencyKey: string;
   }) => Promise<{ success: boolean; error?: string }>;
 }
+
+import { 
+  db, 
+  collection, 
+  addDoc, 
+  onSnapshot, 
+  query, 
+  orderBy, 
+  serverTimestamp,
+  doc,
+  updateDoc,
+  deleteDoc
+} from '../lib/firebase';
+import { RecurringTransfer, RecurringFrequency } from '../types';
 
 export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
   lang,
@@ -81,6 +110,9 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [transferMessage, setTransferMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
+  // Search and Filter State
+  const [searchTerm, setSearchTerm] = useState('');
+
   // Limits State
   const [limits, setLimits] = useState<WalletLimit[]>([]);
   const [editingLimit, setEditingLimit] = useState<WalletLimit | null>(null);
@@ -90,6 +122,32 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
   const [limitUpdateMsg, setLimitUpdateMsg] = useState<string | null>(null);
   const [isSavingLimit, setIsSavingLimit] = useState(false);
 
+  // 7-Day Transaction Trend Data Processor
+  const trendData = useMemo(() => {
+    const days = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (6 - i));
+      return d.toISOString().split('T')[0];
+    });
+
+    return days.map(date => {
+      const dailyTxs = transactions.filter(tx => tx.timestamp.startsWith(date) && tx.status === 'SUCCESS');
+      const volume = dailyTxs.reduce((sum, tx) => sum + tx.amount, 0);
+      const count = dailyTxs.length;
+      
+      const displayDate = new Date(date).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+
+      return {
+        date: displayDate,
+        volume,
+        count
+      };
+    });
+  }, [transactions, lang]);
+
   // Mock 2FA Verification State
   const [show2FAModal, setShow2FAModal] = useState(false);
   const [twoFactorMethod, setTwoFactorMethod] = useState<'sms' | 'totp' | 'hardware'>('sms');
@@ -98,8 +156,148 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
   const [twoFactorError, setTwoFactorError] = useState<string | null>(null);
   const [force2FA, setForce2FA] = useState(false);
   const [otpTimer, setOtpTimer] = useState(30);
+  const profileId = 'c45cfdf2-e229-4f95-a845-afef0163b1d0';
+
+  // Recurring Transfers State
+  const [recurringTransfers, setRecurringTransfers] = useState<RecurringTransfer[]>([]);
+  const [isRecurringModalOpen, setIsRecurringModalOpen] = useState(false);
+  const [isSavingRecurring, setIsSavingRecurring] = useState(false);
+  const [recFreq, setRecFreq] = useState<RecurringFrequency>('MONTHLY');
+  const [recDesc, setRecDesc] = useState('');
+  const [recStartDate, setRecStartDate] = useState(new Date().toISOString().split('T')[0]);
+
+  // Sync Recurring Transfers from Firestore
+  useEffect(() => {
+    try {
+      const q = query(collection(db, 'recurringTransfers'), orderBy('createdAt', 'desc'));
+      const unsubscribe = onSnapshot(q, (snapshot) => {
+        const transfers = snapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        } as RecurringTransfer));
+        setRecurringTransfers(transfers);
+      });
+      return () => unsubscribe();
+    } catch (err) {
+      console.warn('Firestore Recurring sync failed:', err);
+    }
+  }, []);
+
+  const handleSaveRecurring = async () => {
+    setIsSavingRecurring(true);
+    try {
+      const sender = wallets.find(w => w.id === senderId);
+      const receiver = wallets.find(w => w.id === receiverId);
+      
+      const newRecurring: Partial<RecurringTransfer> = {
+        senderWalletId: senderId,
+        senderName: sender?.ownerName || 'Unknown',
+        receiverWalletId: receiverId,
+        receiverName: receiver?.ownerName || 'Unknown',
+        amount: parseFloat(amount),
+        currency: (sender?.currency as any) || 'BDT',
+        frequency: recFreq,
+        startDate: recStartDate,
+        nextExecutionDate: recStartDate, // In real app, calculate based on frequency
+        status: 'ACTIVE',
+        description: recDesc || reference,
+        createdAt: new Date().toISOString()
+      };
+
+      await addDoc(collection(db, 'recurringTransfers'), newRecurring);
+      setIsRecurringModalOpen(false);
+      setRecDesc('');
+      setTransferMessage({
+        type: 'success',
+        text: lang === 'bn' ? 'রিকারিং ট্রান্সফার সফলভাবে শিডিউল করা হয়েছে!' : 'Recurring transfer scheduled successfully!'
+      });
+    } catch (err) {
+      console.error('Save Recurring Error:', err);
+      alert('Failed to schedule recurring transfer.');
+    } finally {
+      setIsSavingRecurring(false);
+    }
+  };
+
+  const handleToggleRecurringStatus = async (tx: RecurringTransfer) => {
+    const newStatus = tx.status === 'ACTIVE' ? 'PAUSED' : 'ACTIVE';
+    try {
+      const ref = doc(db, 'recurringTransfers', tx.id);
+      await updateDoc(ref, { status: newStatus });
+    } catch (err) {
+      console.error('Update Status Error:', err);
+    }
+  };
+
+  const handleDeleteRecurring = async (id: string) => {
+    if (!confirm(lang === 'bn' ? 'আপনি কি এই শিডিউলটি ডিলিট করতে চান?' : 'Are you sure you want to delete this schedule?')) return;
+    try {
+      const ref = doc(db, 'recurringTransfers', id);
+      await deleteDoc(ref);
+    } catch (err) {
+      console.error('Delete Recurring Error:', err);
+    }
+  };
+
+  // Filtered Transactions Processor
+  const filteredTransactions = useMemo(() => {
+    if (!searchTerm.trim()) return transactions;
+    const term = searchTerm.toLowerCase();
+    return transactions.filter(tx => {
+      const dateStr = new Date(tx.timestamp).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US');
+      return (
+        tx.receiverName.toLowerCase().includes(term) ||
+        tx.id.toLowerCase().includes(term) ||
+        tx.reference.toLowerCase().includes(term) ||
+        dateStr.includes(term) ||
+        tx.timestamp.includes(term)
+      );
+    });
+  }, [transactions, searchTerm, lang]);
 
   const HIGH_VALUE_THRESHOLD = 50000; // ৳50,000 threshold for 2FA requirement
+  
+  const handleShareTransaction = async (tx: Transaction) => {
+    const shareData = {
+      title: lang === 'bn' ? 'PayRoute ট্রানজ্যাকশন রিপোর্ট' : 'PayRoute Transaction Report',
+      text: lang === 'bn' 
+        ? `${tx.receiverName}-কে ${tx.amount} ${tx.currency} পাঠানো হয়েছে। স্ট্যাটাস: ${tx.status}। রেফারেন্স: ${tx.reference}`
+        : `Sent ${tx.amount} ${tx.currency} to ${tx.receiverName}. Status: ${tx.status}. Ref: ${tx.reference}`,
+      url: window.location.href
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        console.error('Error sharing:', err);
+      }
+    } else {
+      navigator.clipboard.writeText(shareData.text + ' ' + shareData.url);
+      alert(lang === 'bn' ? 'তথ্য ক্লিপবোর্ডে কপি করা হয়েছে!' : 'Information copied to clipboard!');
+    }
+  };
+
+  const handleShareReferral = async () => {
+    const shareData = {
+      title: lang === 'bn' ? 'PayRoute-এ জয়েন করুন' : 'Join PayRoute Ledger',
+      text: lang === 'bn'
+        ? 'নিরাপদ এবং দ্রুত পেমেন্ট লেজার সিস্টেম PayRoute ব্যবহার করুন। আমার রেফারেল লিঙ্ক দিয়ে সাইন আপ করুন!'
+        : 'Use PayRoute, the secure and fast payment ledger system. Sign up using my referral link!',
+      url: `${window.location.origin}?ref=ADMIN-${profileId.substring(0, 8)}`
+    };
+
+    if (navigator.share) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        console.error('Error sharing referral:', err);
+      }
+    } else {
+      navigator.clipboard.writeText(shareData.text + ' ' + shareData.url);
+      alert(lang === 'bn' ? 'রেফারেল লিঙ্ক ক্লিপবোর্ডে কপি করা হয়েছে!' : 'Referral link copied to clipboard!');
+    }
+  };
 
   // QR Code State & Handlers
   const [showQRGeneratorModal, setShowQRGeneratorModal] = useState(false);
@@ -398,6 +596,55 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
 
   return (
     <div className="space-y-8">
+      {/* GLOBAL SEARCH INPUT */}
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-2xl p-4 shadow-lg backdrop-blur-md flex items-center gap-3">
+          <div className="relative flex-1">
+            <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
+              <Hash className="w-4 h-4 text-slate-500" />
+            </div>
+            <input
+              type="text"
+              placeholder={lang === 'bn' ? 'মার্চেন্ট, রেফারেন্স আইডি বা তারিখ দিয়ে খুঁজুন...' : 'Search transactions by merchant, reference ID, or date...'}
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 pl-10 pr-4 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all"
+            />
+            {searchTerm && (
+              <button 
+                onClick={() => setSearchTerm('')}
+                className="absolute inset-y-0 right-3 flex items-center text-slate-500 hover:text-slate-300"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-indigo-500/10 border border-indigo-500/20 rounded-lg">
+            <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
+            <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-wider">
+              {filteredTransactions.length} {lang === 'bn' ? 'ফলাফল' : 'Results'}
+            </span>
+          </div>
+        </div>
+
+        {/* REFERRAL SHARE CARD */}
+        <button 
+          onClick={handleShareReferral}
+          className="bg-gradient-to-br from-emerald-600/20 to-teal-600/20 border border-emerald-500/30 rounded-2xl p-4 flex items-center gap-4 hover:from-emerald-600/30 hover:to-teal-600/30 transition-all group"
+        >
+          <div className="w-12 h-12 rounded-xl bg-emerald-500/20 flex items-center justify-center text-emerald-400 border border-emerald-500/30 group-hover:scale-110 transition-transform">
+            <Gift className="w-6 h-6" />
+          </div>
+          <div className="text-left">
+            <div className="text-sm font-bold text-emerald-100">{lang === 'bn' ? 'বন্ধুদের রেফার করুন' : 'Refer Friends'}</div>
+            <div className="text-[10px] text-emerald-400/80 font-medium">{lang === 'bn' ? '৳৫০০ বোনাস জিতে নিন!' : 'Win ৳500 Bonus!'}</div>
+          </div>
+          <div className="ml-auto p-2 bg-emerald-500 text-white rounded-lg shadow-lg shadow-emerald-500/20">
+            <Share2 className="w-4 h-4" />
+          </div>
+        </button>
+      </div>
+
       {/* SECTION 1: WALLET BALANCES SUMMARY GRID */}
       <div>
         <div className="flex items-center justify-between mb-4">
@@ -460,6 +707,115 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
               </div>
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* SECTION: TRANSACTION VOLUME TREND DASHBOARD */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div className="lg:col-span-2 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-emerald-400" />
+                <span>{lang === 'bn' ? '৭ দিনের লেনদেনের ট্রেন্ড' : '7-Day Transaction Trend'}</span>
+              </h3>
+              <p className="text-xs text-slate-400 mt-1">
+                {lang === 'bn' 
+                  ? 'গত ৭ দিনের সফল লেনদেনের ভলিউম ও ফ্রিকোয়েন্সি অ্যানালিটিক্স।' 
+                  : 'Volume and frequency analytics for successful transactions over the last 7 days.'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1.5 px-2 py-1 bg-emerald-500/10 border border-emerald-500/20 rounded-lg">
+                <div className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span className="text-[10px] font-bold text-emerald-300 uppercase">Volume</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="h-[280px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={trendData}>
+                <defs>
+                  <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                <XAxis 
+                  dataKey="date" 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fill: '#94a3b8', fontSize: 10 }}
+                  dy={10}
+                />
+                <YAxis 
+                  axisLine={false} 
+                  tickLine={false} 
+                  tick={{ fill: '#94a3b8', fontSize: 10 }}
+                  tickFormatter={(value) => `৳${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
+                />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }}
+                  itemStyle={{ color: '#10b981' }}
+                  formatter={(value: number) => [`৳${value.toLocaleString()}`, lang === 'bn' ? 'ভলিউম' : 'Volume']}
+                />
+                <Area 
+                  type="monotone" 
+                  dataKey="volume" 
+                  stroke="#10b981" 
+                  strokeWidth={3}
+                  fillOpacity={1} 
+                  fill="url(#colorVolume)" 
+                  animationDuration={1500}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2 mb-4">
+              <Zap className="w-5 h-5 text-amber-400" />
+              <span>{lang === 'bn' ? 'ট্রানজ্যাকশন ফ্রিকোয়েন্সি' : 'Daily Frequency'}</span>
+            </h3>
+            <div className="h-[200px] w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={trendData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+                  <XAxis 
+                    dataKey="date" 
+                    axisLine={false} 
+                    tickLine={false} 
+                    tick={{ fill: '#94a3b8', fontSize: 10 }}
+                  />
+                  <Tooltip 
+                    cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
+                    contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }}
+                    formatter={(value: number) => [value, lang === 'bn' ? 'ট্রানজ্যাকশন' : 'Transactions']}
+                  />
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]} animationDuration={1500}>
+                    {trendData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={entry.count > 0 ? '#6366f1' : '#1e293b'} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+
+          <div className="mt-6 pt-6 border-t border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">{lang === 'bn' ? 'মোট ৭ দিনের ভলিউম:' : 'Total 7-Day Volume:'}</span>
+              <span className="text-sm font-bold text-white">৳ {trendData.reduce((s, i) => s + i.volume, 0).toLocaleString()}</span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-slate-400">{lang === 'bn' ? 'গড় দৈনিক ভলিউম:' : 'Avg Daily Volume:'}</span>
+              <span className="text-sm font-bold text-indigo-400">৳ {Math.round(trendData.reduce((s, i) => s + i.volume, 0) / 7).toLocaleString()}</span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -794,27 +1150,283 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
               </div>
             )}
 
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full mt-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-2.5 px-4 rounded-xl text-xs shadow-lg shadow-blue-600/25 transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
-            >
-              {isSubmitting ? (
-                <>
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  <span>{lang === 'bn' ? 'এসিড ট্রানজ্যাকশন রান হচ্ছে...' : 'Executing ACID Transaction...'}</span>
-                </>
-              ) : (
-                <>
-                  <ShieldCheck className="w-4 h-4" />
-                  <span>{lang === 'bn' ? 'অটোমেটেড ট্রান্সফার নিশ্চিত করুন' : 'Confirm Automated Transfer'}</span>
-                </>
-              )}
-            </button>
+            <div className="flex items-center gap-3 mt-2">
+              <button
+                type="submit"
+                disabled={isSubmitting}
+                className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold py-2.5 px-4 rounded-xl text-xs shadow-lg shadow-blue-600/25 transition-all flex items-center justify-center space-x-2 disabled:opacity-50"
+              >
+                {isSubmitting ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>{lang === 'bn' ? 'এসিড ট্রানজ্যাকশন রান হচ্ছে...' : 'Executing ACID Transaction...'}</span>
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheck className="w-4 h-4" />
+                    <span>{lang === 'bn' ? 'ট্রান্সফার নিশ্চিত করুন' : 'Confirm Transfer'}</span>
+                  </>
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsRecurringModalOpen(true)}
+                className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs rounded-xl transition flex items-center justify-center gap-2"
+              >
+                <Clock className="w-4 h-4 text-amber-400" />
+                <span>{lang === 'bn' ? 'শিডিউল' : 'Schedule'}</span>
+              </button>
+            </div>
           </form>
         </div>
 
-        {/* SECTION 4: DOUBLE-ENTRY IMMUTABLE LEDGER ENTRIES */}
+        {/* SECTION: RECURRING TRANSFERS LIST */}
+        <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col h-full">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+              <RefreshCw className="w-5 h-5 text-indigo-400" />
+              <span>{lang === 'bn' ? 'সক্রিয় রিকারিং ট্রান্সফার' : 'Active Recurring Transfers'}</span>
+            </h3>
+            <p className="text-[10px] text-slate-400 mt-0.5">
+              {lang === 'bn' ? 'স্বয়ংক্রিয়ভাবে নির্ধারিত সময়ে পেমেন্ট প্রসেস করার তালিকা।' : 'List of payments scheduled for automated execution at set intervals.'}
+            </p>
+          </div>
+          <div className="bg-indigo-500/10 text-indigo-300 border border-indigo-500/30 px-2 py-0.5 rounded text-[10px] font-bold">
+            {recurringTransfers.length} ACTIVE
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-3 overflow-y-auto max-h-[500px] pr-1 custom-scrollbar">
+          {recurringTransfers.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full py-10 opacity-40">
+              <Timer className="w-10 h-10 mb-2" />
+              <p className="text-xs">{lang === 'bn' ? 'কোনো শিডিউল পাওয়া যায়নি' : 'No scheduled transfers yet'}</p>
+            </div>
+          ) : (
+            recurringTransfers.map(rt => (
+              <div key={rt.id} className="bg-slate-950 border border-slate-800 rounded-xl p-4 flex items-center justify-between group hover:border-indigo-500/30 transition-all">
+                <div className="flex items-center gap-4">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center border ${
+                    rt.status === 'ACTIVE' ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-400' : 'bg-slate-800 border-slate-700 text-slate-500'
+                  }`}>
+                    <Clock className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold text-slate-100">৳{rt.amount.toLocaleString()}</span>
+                      <span className="px-1.5 py-0.5 bg-slate-800 text-slate-400 text-[9px] rounded font-bold uppercase tracking-tighter">{rt.frequency}</span>
+                    </div>
+                    <div className="text-[10px] text-slate-400 truncate max-w-[150px]">{rt.description}</div>
+                    <div className="text-[9px] text-slate-500 mt-1 flex items-center gap-1">
+                      <ArrowRight className="w-2 h-2" />
+                      <span>{rt.receiverName}</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleToggleRecurringStatus(rt)}
+                    className={`p-1.5 rounded-lg border transition-all ${
+                      rt.status === 'ACTIVE' 
+                        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20 hover:bg-amber-500/20' 
+                        : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 hover:bg-emerald-500/20'
+                    }`}
+                    title={rt.status === 'ACTIVE' ? 'Pause' : 'Activate'}
+                  >
+                    {rt.status === 'ACTIVE' ? <Lock className="w-3.5 h-3.5" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteRecurring(rt.id)}
+                    className="p-1.5 bg-rose-500/10 text-rose-400 border border-rose-500/20 rounded-lg hover:bg-rose-500/20 transition-all"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+
+        {/* Recurring Transfer Modal */}
+      {isRecurringModalOpen && (
+        <div className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-6">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-indigo-500/20 flex items-center justify-center text-indigo-400 border border-indigo-500/30">
+                  <RefreshCw className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-slate-100">{lang === 'bn' ? 'রিকারিং ট্রান্সফার সেটআপ' : 'Recurring Transfer Setup'}</h3>
+                  <p className="text-xs text-slate-400">{lang === 'bn' ? 'স্বয়ংক্রিয় পেমেন্ট শিডিউল করুন' : 'Configure automated payment schedule'}</p>
+                </div>
+              </div>
+              <button onClick={() => setIsRecurringModalOpen(false)} className="text-slate-500 hover:text-slate-300">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4">
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 space-y-1">
+                <div className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">{lang === 'bn' ? 'ট্রান্সফার ডিটেইলস' : 'Transfer Details'}</div>
+                <div className="text-sm font-bold text-white">৳{amount} BDT</div>
+                <div className="text-xs text-slate-400 truncate flex items-center gap-2">
+                  <ArrowRight className="w-3 h-3" />
+                  {wallets.find(w => w.id === receiverId)?.ownerName}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">{lang === 'bn' ? 'ফ্রিকোয়েন্সি (কত সময় পর পর)' : 'Frequency'}</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {(['DAILY', 'WEEKLY', 'MONTHLY'] as RecurringFrequency[]).map(freq => (
+                    <button
+                      key={freq}
+                      onClick={() => setRecFreq(freq)}
+                      className={`py-2 text-[10px] font-bold rounded-lg border transition-all ${
+                        recFreq === freq 
+                          ? 'bg-indigo-600 text-white border-indigo-500' 
+                          : 'bg-slate-800 text-slate-400 border-slate-700 hover:bg-slate-750'
+                      }`}
+                    >
+                      {freq}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">{lang === 'bn' ? 'শুরুর তারিখ' : 'Start Date'}</label>
+                <input
+                  type="date"
+                  value={recStartDate}
+                  onChange={(e) => setRecStartDate(e.target.value)}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-400 mb-1.5">{lang === 'bn' ? 'বিবরণ (ঐচ্ছিক)' : 'Description (Optional)'}</label>
+                <textarea
+                  value={recDesc}
+                  onChange={(e) => setRecDesc(e.target.value)}
+                  placeholder={lang === 'bn' ? 'যেমন: মাসিক অফিসের ভাড়া' : 'e.g., Monthly Office Rent'}
+                  className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 h-20 resize-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => setIsRecurringModalOpen(false)}
+                className="flex-1 py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs rounded-xl transition-all"
+              >
+                {lang === 'bn' ? 'বাতিল' : 'Cancel'}
+              </button>
+              <button
+                onClick={handleSaveRecurring}
+                disabled={isSavingRecurring}
+                className="flex-[2] py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs rounded-xl transition-all shadow-lg shadow-indigo-600/30 flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isSavingRecurring ? <RefreshCw className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
+                {lang === 'bn' ? 'শিডিউল নিশ্চিত করুন' : 'Confirm Schedule'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION: TRANSACTION HISTORY TABLE */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-blue-400" />
+              <span>{lang === 'bn' ? 'লেনদেনের বিস্তারিত ইতিহাস' : 'Detailed Transaction History'}</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              {lang === 'bn' 
+                ? 'সিস্টেমের সকল সফল ও ব্যর্থ লেনদেনের রিয়েল-টাইম তালিকা।' 
+                : 'Real-time record of all successful and failed transactions across the network.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60">
+          <table className="w-full text-left text-xs">
+            <thead className="bg-slate-900 text-slate-400 font-semibold sticky top-0 border-b border-slate-800">
+              <tr>
+                <th className="p-3">{lang === 'bn' ? 'আইডি' : 'TX ID'}</th>
+                <th className="p-3">{lang === 'bn' ? 'তারিখ' : 'Date'}</th>
+                <th className="p-3">{lang === 'bn' ? 'প্রেরক' : 'Sender'}</th>
+                <th className="p-3">{lang === 'bn' ? 'প্রাপক / মার্চেন্ট' : 'Receiver / Merchant'}</th>
+                <th className="p-3 text-right">{lang === 'bn' ? 'পরিমাণ' : 'Amount'}</th>
+                <th className="p-3">{lang === 'bn' ? 'অবস্থা' : 'Status'}</th>
+                <th className="p-3 text-center">{lang === 'bn' ? 'শেয়ার' : 'Share'}</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {filteredTransactions.length > 0 ? (
+                filteredTransactions.map((tx) => (
+                  <tr key={tx.id} className="hover:bg-slate-800/40 transition-colors">
+                    <td className="p-3 font-mono text-[10px] text-slate-400">
+                      {tx.id}
+                    </td>
+                    <td className="p-3 text-slate-300">
+                      <div>{new Date(tx.timestamp).toLocaleDateString()}</div>
+                      <div className="text-[10px] text-slate-500">{new Date(tx.timestamp).toLocaleTimeString()}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="font-medium text-slate-200">{tx.senderName}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">{tx.senderWalletId}</div>
+                    </td>
+                    <td className="p-3">
+                      <div className="font-medium text-slate-200">{tx.receiverName}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">{tx.receiverWalletId}</div>
+                    </td>
+                    <td className="p-3 text-right font-bold text-white">
+                      ৳{tx.amount.toLocaleString()}
+                    </td>
+                    <td className="p-3">
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                        tx.status === 'SUCCESS' 
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
+                          : tx.status === 'FAILED' 
+                          ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
+                          : 'bg-slate-800 text-slate-400 border-slate-700'
+                      }`}>
+                        {tx.status}
+                      </span>
+                    </td>
+                    <td className="p-3 text-center">
+                      <button
+                        onClick={() => handleShareTransaction(tx)}
+                        className="p-1.5 bg-slate-800 hover:bg-indigo-600/30 text-slate-400 hover:text-indigo-400 rounded-lg transition-all border border-slate-700 hover:border-indigo-500/30"
+                        title={lang === 'bn' ? 'ট্রানজ্যাকশন শেয়ার করুন' : 'Share Transaction'}
+                      >
+                        <Share2 className="w-3.5 h-3.5" />
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              ) : (
+                <tr>
+                  <td colSpan={6} className="p-8 text-center text-slate-500">
+                    {lang === 'bn' ? 'কোনো লেনদেন পাওয়া যায়নি।' : 'No transactions found matching your search.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* SECTION 4: DOUBLE-ENTRY IMMUTABLE LEDGER ENTRIES */}
         <div className="lg:col-span-7 bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl flex flex-col">
           <div className="flex items-center justify-between mb-4">
             <div>
@@ -883,7 +1495,6 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
             </table>
           </div>
         </div>
-      </div>
 
       {/* MODAL: EDIT TRANSACTION LIMITS */}
       {editingLimit && (

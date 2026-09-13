@@ -19,6 +19,33 @@
         "smsReceipt": { "type": "string" }
       },
       "required": ["userId", "biller", "amount", "txnId"]
+    },
+    "recurringTransfers": {
+      "title": "Recurring Wallet Transfers",
+      "description": "Stores scheduled recurring ledger transfers with frequency config",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "senderWalletId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "receiverWalletId": { "type": "string" },
+        "receiverName": { "type": "string" },
+        "amount": { "type": "number" },
+        "currency": { "type": "string" },
+        "frequency": { "type": "string", "enum": ["DAILY", "WEEKLY", "MONTHLY"] },
+        "startDate": { "type": "string" },
+        "nextExecutionDate": { "type": "string" },
+        "status": { "type": "string", "enum": ["ACTIVE", "PAUSED", "CANCELLED"] },
+        "description": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "senderWalletId", "receiverWalletId", "amount", "frequency", "status"]
+    }
+  },
+  "firestore": {
+    "recurringTransfers/{transferId}": {
+      "schema": "recurringTransfers",
+      "description": "Collection of scheduled recurring transfers"
     }
   }
 }

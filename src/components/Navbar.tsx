@@ -22,8 +22,19 @@ import {
   Settings,
   Activity,
   Sliders,
-  RotateCw
+  RotateCw,
+  Bell,
+  BellOff,
+  Share2,
+  Twitter,
+  Facebook,
+  Linkedin,
+  MessageCircle,
+  ExternalLink
 } from 'lucide-react';
+
+import { usePWAInstall } from '../lib/pwa';
+import { sendNotification } from '../lib/notifications';
 
 interface NavbarProps {
   lang: 'en' | 'bn';
@@ -39,6 +50,8 @@ interface NavbarProps {
   autoSync: boolean;
   setAutoSync: (val: boolean) => void;
   lastSyncedAt?: Date | null;
+  notificationsEnabled: boolean;
+  onToggleNotifications: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -55,14 +68,20 @@ export const Navbar: React.FC<NavbarProps> = ({
   autoSync,
   setAutoSync,
   lastSyncedAt,
+  notificationsEnabled,
+  onToggleNotifications,
 }) => {
   const [timeString, setTimeString] = useState('');
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
   const profileId = 'c45cfdf2-e229-4f95-a845-afef0163b1d0';
   const firestoreDbId = 'ai-studio-payrouteledger-c45cfdf2-e229-4f95-a845-afef0163b1d0';
+
+  const { isInstallable, isInstalled, install } = usePWAInstall();
 
   useEffect(() => {
     const updateClock = () => {
@@ -78,6 +97,45 @@ export const Navbar: React.FC<NavbarProps> = ({
     navigator.clipboard.writeText(text);
     setCopiedId(true);
     setTimeout(() => setCopiedId(false), 2000);
+  };
+
+  const handleCopyLink = () => {
+    navigator.clipboard.writeText(window.location.href);
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
+  };
+
+  const shareOnFacebook = () => {
+    const url = window.location.href;
+    window.open(`https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`, '_blank');
+  };
+
+  const shareOnTwitter = () => {
+    const url = window.location.href;
+    const text = lang === 'bn' ? 'PayRoute ACID লেজার পেমেন্ট সলিউশন চেক আউট করুন!' : 'Check out PayRoute ACID Ledger payment solution!';
+    window.open(`https://twitter.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(text)}`, '_blank');
+  };
+
+  const shareOnWhatsApp = () => {
+    const url = window.location.href;
+    const text = lang === 'bn' ? 'PayRoute ACID লেজার পেমেন্ট সলিউশন চেক আউট করুন!' : 'Check out PayRoute ACID Ledger payment solution!';
+    window.open(`https://api.whatsapp.com/send?text=${encodeURIComponent(text + ' ' + url)}`, '_blank');
+  };
+
+  const shareOnLinkedIn = () => {
+    const url = window.location.href;
+    window.open(`https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`, '_blank');
+  };
+
+  const handleTestNotification = () => {
+    sendNotification({
+      title: lang === 'bn' ? 'টেস্ট নোটিফিকেশন' : 'Test Notification',
+      body: lang === 'bn' 
+        ? 'এটি একটি সফল পুশ নোটিফিকেশন টেস্ট!' 
+        : 'This is a successful push notification test!',
+      icon: '/favicon.jpg',
+      tag: 'test-notification'
+    });
   };
 
   return (
@@ -145,21 +203,19 @@ export const Navbar: React.FC<NavbarProps> = ({
             <button
               onClick={() => setIsSettingsModalOpen(true)}
               className={`flex items-center space-x-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all ${
-                autoSync 
+                autoSync || notificationsEnabled
                   ? 'bg-emerald-950/70 text-emerald-300 border-emerald-500/40 shadow-inner hover:border-emerald-400' 
                   : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
               }`}
-              title={lang === 'bn' ? 'সেটিংস ও অটো-সিঙ্ক (Auto-Sync)' : 'Settings & Auto-Sync'}
+              title={lang === 'bn' ? 'সেটিংস ও নোটিফিকেশন' : 'Settings & Notifications'}
             >
-              <Settings className={`w-3.5 h-3.5 ${autoSync ? 'text-emerald-400' : 'text-slate-400'}`} />
+              <Settings className={`w-3.5 h-3.5 ${autoSync || notificationsEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
               <span className="hidden sm:inline">{lang === 'bn' ? 'সেটিংস' : 'Settings'}</span>
-              {autoSync ? (
+              {(autoSync || notificationsEnabled) && (
                 <span className="flex items-center space-x-1 text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded-full border border-emerald-500/40 font-mono font-bold">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  <span>60s</span>
+                  {autoSync && <Activity className="w-2 h-2" />}
+                  {notificationsEnabled && <Bell className="w-2 h-2" />}
                 </span>
-              ) : (
-                <span className="text-[10px] text-slate-500 font-mono font-bold px-1 bg-slate-900 rounded">OFF</span>
               )}
             </button>
 
@@ -215,9 +271,112 @@ export const Navbar: React.FC<NavbarProps> = ({
               <Globe className="w-3.5 h-3.5 text-indigo-400" />
               <span>{lang === 'en' ? 'বাংলা' : 'EN'}</span>
             </button>
+
+            {/* Share Button */}
+            <button
+              onClick={() => setIsShareModalOpen(true)}
+              className="flex items-center space-x-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all shadow-md shadow-indigo-600/20"
+              title={lang === 'bn' ? 'অ্যাপটি শেয়ার করুন' : 'Share App'}
+            >
+              <Share2 className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">{lang === 'bn' ? 'শেয়ার করুন' : 'Share'}</span>
+            </button>
           </div>
         </div>
       </header>
+
+      {/* Share Modal */}
+      {isShareModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl p-6 max-w-sm w-full shadow-2xl space-y-6 animate-fadeIn">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 flex items-center justify-center">
+                  <Share2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-100">
+                    {lang === 'bn' ? 'বন্ধুদের সাথে শেয়ার করুন' : 'Share with Friends'}
+                  </h3>
+                  <p className="text-[11px] text-slate-400">{lang === 'bn' ? 'PayRoute প্ল্যাটফর্মটি বিভিন্ন মিডিয়াতে শেয়ার করুন' : 'Spread the word about PayRoute platform'}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsShareModalOpen(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                onClick={shareOnFacebook}
+                className="flex flex-col items-center justify-center p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-full bg-[#1877F2]/10 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <Facebook className="w-5 h-5 text-[#1877F2]" />
+                </div>
+                <span className="text-xs font-medium text-slate-300">Facebook</span>
+              </button>
+              
+              <button
+                onClick={shareOnWhatsApp}
+                className="flex flex-col items-center justify-center p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-full bg-[#25D366]/10 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <MessageCircle className="w-5 h-5 text-[#25D366]" />
+                </div>
+                <span className="text-xs font-medium text-slate-300">WhatsApp</span>
+              </button>
+
+              <button
+                onClick={shareOnTwitter}
+                className="flex flex-col items-center justify-center p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-full bg-slate-100/10 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <Twitter className="w-5 h-5 text-slate-100" />
+                </div>
+                <span className="text-xs font-medium text-slate-300">Twitter (X)</span>
+              </button>
+
+              <button
+                onClick={shareOnLinkedIn}
+                className="flex flex-col items-center justify-center p-4 bg-slate-800/50 hover:bg-slate-800 border border-slate-700 rounded-xl transition-all group"
+              >
+                <div className="w-10 h-10 rounded-full bg-[#0A66C2]/10 flex items-center justify-center mb-2 group-hover:scale-110 transition-transform">
+                  <Linkedin className="w-5 h-5 text-[#0A66C2]" />
+                </div>
+                <span className="text-xs font-medium text-slate-300">LinkedIn</span>
+              </button>
+            </div>
+
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2">
+              <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                {lang === 'bn' ? 'ডাইরেক্ট লিঙ্ক:' : 'Direct App Link:'}
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="flex-1 bg-slate-900 border border-slate-800 px-3 py-2 rounded text-[10px] text-slate-400 truncate">
+                  {window.location.href}
+                </div>
+                <button
+                  onClick={handleCopyLink}
+                  className="flex items-center justify-center p-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded transition-colors shrink-0"
+                >
+                  {copiedLink ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setIsShareModalOpen(false)}
+              className="w-full py-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs rounded-xl transition-colors"
+            >
+              {lang === 'bn' ? 'বন্ধ করুন' : 'Close'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* System Settings & Auto-Sync Modal */}
       {isSettingsModalOpen && (
@@ -252,6 +411,75 @@ export const Navbar: React.FC<NavbarProps> = ({
             {/* Settings Options */}
             <div className="space-y-4">
               
+              {/* Push Notifications Toggle */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2.5">
+                    {notificationsEnabled ? (
+                      <Bell className="w-5 h-5 text-emerald-400" />
+                    ) : (
+                      <BellOff className="w-5 h-5 text-slate-500" />
+                    )}
+                    <div>
+                      <h4 className="text-sm font-bold text-slate-100">
+                        {lang === 'bn' ? 'পুশ নোটিফিকেশন (Push Notifications)' : 'Browser Push Notifications'}
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        {lang === 'bn' 
+                          ? 'পেমেন্ট সম্পন্ন বা ব্যর্থ হলে রিয়েল-টাইম ব্রাউজার অ্যালার্ট পান।' 
+                          : 'Get real-time browser alerts when transfers are completed or failed.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Switch Toggle */}
+                  <button
+                    type="button"
+                    onClick={onToggleNotifications}
+                    className={`relative inline-flex h-6 w-11 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                      notificationsEnabled ? 'bg-emerald-500 shadow-lg shadow-emerald-500/30' : 'bg-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                        notificationsEnabled ? 'translate-x-5' : 'translate-x-0'
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {notificationsEnabled && (
+                  <button
+                    onClick={handleTestNotification}
+                    className="w-full flex items-center justify-center space-x-2 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-[11px] font-bold border border-slate-700 transition-all"
+                  >
+                    <Bell className="w-3 h-3" />
+                    <span>{lang === 'bn' ? 'টেস্ট নোটিফিকেশন পাঠান' : 'Send Test Notification'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* PWA Install Button */}
+              {isInstallable && !isInstalled && (
+                <div className="bg-slate-950 p-4 rounded-xl border border-blue-500/30 flex items-center justify-between">
+                  <div>
+                    <h4 className="text-sm font-bold text-blue-300">
+                      {lang === 'bn' ? 'অ্যাপ ইন্সটল করুন' : 'Install PayRoute App'}
+                    </h4>
+                    <p className="text-xs text-slate-400">
+                      {lang === 'bn' ? 'ভালো অভিজ্ঞতার জন্য অ্যাপটি ইন্সটল করুন' : 'Install for a full-screen standalone experience'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={install}
+                    className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-600/20"
+                  >
+                    <BadgeCheck className="w-3.5 h-3.5" />
+                    <span>{lang === 'bn' ? 'ইন্সটল' : 'Install'}</span>
+                  </button>
+                </div>
+              )}
+
               {/* Auto-Sync Toggle Control */}
               <div className="bg-slate-950 p-4 rounded-xl border border-indigo-500/30 space-y-3">
                 <div className="flex items-center justify-between">

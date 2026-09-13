@@ -16,6 +16,9 @@ import {
   query, 
   orderBy, 
   serverTimestamp,
+  doc,
+  updateDoc,
+  deleteDoc,
   Firestore
 } from 'firebase/firestore';
 import firebaseConfigJson from '../../firebase-applet-config.json';
@@ -49,6 +52,9 @@ export {
   onSnapshot, 
   query, 
   orderBy, 
-  serverTimestamp 
+  serverTimestamp,
+  doc,
+  updateDoc,
+  deleteDoc
 };
 export type { User };

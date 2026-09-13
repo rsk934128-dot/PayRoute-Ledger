@@ -35,6 +35,7 @@ import {
   Minimize2
 } from 'lucide-react';
 import { Wallet, Transaction } from '../types';
+import { sendNotification } from '../lib/notifications';
 
 interface MobileAppSimulatorViewProps {
   lang: 'en' | 'bn';
@@ -122,12 +123,19 @@ export const MobileAppSimulatorView: React.FC<MobileAppSimulatorViewProps> = ({
 
       const data = await res.json();
       if (data.success) {
-        setActionSuccessMsg(
-          lang === 'bn' 
-            ? `৳${amount} সফলভাবে ${recipient} কে পাঠানো হয়েছে!` 
-            : `৳${amount} successfully transferred to ${recipient}!`
-        );
+        const msg = lang === 'bn' 
+          ? `৳${amount} সফলভাবে ${recipient} কে পাঠানো হয়েছে!` 
+          : `৳${amount} successfully transferred to ${recipient}!`;
+        
+        setActionSuccessMsg(msg);
         onTransactionSuccess();
+
+        sendNotification({
+          title: lang === 'bn' ? 'টাকা পাঠানো হয়েছে!' : 'Money Sent!',
+          body: msg,
+          tag: 'mobile-transfer'
+        });
+
         setTimeout(() => {
           setActiveActionModal(null);
           setActionSuccessMsg(null);
@@ -166,12 +174,19 @@ export const MobileAppSimulatorView: React.FC<MobileAppSimulatorViewProps> = ({
 
       const data = await res.json();
       if (data.success) {
-        setActionSuccessMsg(
-          lang === 'bn'
-            ? `${operator} নম্বর ${recipient} এ ৳${amount} রিচার্জ সফল!`
-            : `${operator} Mobile recharge of ৳${amount} to ${recipient} successful!`
-        );
+        const msg = lang === 'bn'
+          ? `${operator} নম্বর ${recipient} এ ৳${amount} রিচার্জ সফল!`
+          : `${operator} Mobile recharge of ৳${amount} to ${recipient} successful!`;
+
+        setActionSuccessMsg(msg);
         onTransactionSuccess();
+
+        sendNotification({
+          title: lang === 'bn' ? 'রিচার্জ সফল!' : 'Recharge Successful!',
+          body: msg,
+          tag: 'mobile-recharge'
+        });
+
         setTimeout(() => {
           setActiveActionModal(null);
           setActionSuccessMsg(null);
