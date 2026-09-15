@@ -30,7 +30,10 @@ import {
   Facebook,
   Linkedin,
   MessageCircle,
-  ExternalLink
+  ExternalLink,
+  Smartphone,
+  Apple,
+  Download
 } from 'lucide-react';
 
 import { usePWAInstall } from '../lib/pwa';
@@ -80,8 +83,9 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   const profileId = 'c45cfdf2-e229-4f95-a845-afef0163b1d0';
   const firestoreDbId = 'ai-studio-payrouteledger-c45cfdf2-e229-4f95-a845-afef0163b1d0';
+  const [showIOSGuide, setShowIOSGuide] = useState(false);
 
-  const { isInstallable, isInstalled, install } = usePWAInstall();
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
   useEffect(() => {
     const updateClock = () => {
@@ -460,23 +464,58 @@ export const Navbar: React.FC<NavbarProps> = ({
               </div>
 
               {/* PWA Install Button */}
-              {isInstallable && !isInstalled && (
-                <div className="bg-slate-950 p-4 rounded-xl border border-blue-500/30 flex items-center justify-between">
-                  <div>
-                    <h4 className="text-sm font-bold text-blue-300">
-                      {lang === 'bn' ? 'অ্যাপ ইন্সটল করুন' : 'Install PayRoute App'}
-                    </h4>
-                    <p className="text-xs text-slate-400">
-                      {lang === 'bn' ? 'ভালো অভিজ্ঞতার জন্য অ্যাপটি ইন্সটল করুন' : 'Install for a full-screen standalone experience'}
-                    </p>
+              {!isInstalled && (isInstallable || isIOS) && (
+                <div className="bg-slate-950 p-4 rounded-xl border border-blue-500/30 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-bold text-blue-300">
+                        {lang === 'bn' ? 'অ্যাপ ইন্সটল করুন' : 'Install PayRoute App'}
+                      </h4>
+                      <p className="text-xs text-slate-400">
+                        {lang === 'bn' ? 'ভালো অভিজ্ঞতার জন্য অ্যাপটি ইন্সটল করুন' : 'Install for a full-screen standalone experience'}
+                      </p>
+                    </div>
+                    {isInstallable ? (
+                      <button
+                        onClick={install}
+                        className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-600/20"
+                      >
+                        <Download className="w-3.5 h-3.5" />
+                        <span>{lang === 'bn' ? 'ইন্সটল' : 'Install'}</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => setShowIOSGuide(true)}
+                        className="flex items-center space-x-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-bold border border-slate-700 transition-all"
+                      >
+                        <Apple className="w-3.5 h-3.5" />
+                        <span>{lang === 'bn' ? 'আইওএস' : 'iOS'}</span>
+                      </button>
+                    )}
                   </div>
-                  <button
-                    onClick={install}
-                    className="flex items-center space-x-1.5 px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold transition-all shadow-md shadow-blue-600/20"
-                  >
-                    <BadgeCheck className="w-3.5 h-3.5" />
-                    <span>{lang === 'bn' ? 'ইন্সটল' : 'Install'}</span>
-                  </button>
+
+                  {showIOSGuide && (
+                    <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">
+                          {lang === 'bn' ? 'আইফোন/আইপ্যাড ইন্সটল গাইড' : 'iOS Install Guide'}
+                        </span>
+                        <button onClick={() => setShowIOSGuide(false)}>
+                          <X className="w-3 h-3 text-slate-500 hover:text-slate-300" />
+                        </button>
+                      </div>
+                      <div className="space-y-2 text-[11px] text-slate-400">
+                        <p className="flex items-start gap-2">
+                          <span className="w-4 h-4 rounded-full bg-slate-800 flex items-center justify-center text-[9px] font-bold shrink-0 text-blue-400">1</span>
+                          <span>{lang === 'bn' ? 'সাফারি টুলবারে "Share" বাটনে ট্যাপ করুন।' : 'Tap the "Share" button in Safari.'}</span>
+                        </p>
+                        <p className="flex items-start gap-2">
+                          <span className="w-4 h-4 rounded-full bg-slate-800 flex items-center justify-center text-[9px] font-bold shrink-0 text-blue-400">2</span>
+                          <span>{lang === 'bn' ? '"Add to Home Screen" বাটনে ট্যাপ করুন।' : 'Tap "Add to Home Screen".'}</span>
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

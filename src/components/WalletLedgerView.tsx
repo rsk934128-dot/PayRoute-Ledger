@@ -10,6 +10,8 @@ import {
   ResponsiveContainer,
   AreaChart,
   Area,
+  LineChart,
+  Line,
   Cell
 } from 'recharts';
 import { 
@@ -57,7 +59,8 @@ import {
   Gift,
   Upload,
   Sparkles,
-  TrendingUp
+  TrendingUp,
+  Search
 } from 'lucide-react';
 
 interface WalletLedgerViewProps {
@@ -147,6 +150,37 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
       };
     });
   }, [transactions, lang]);
+  
+  // 30-Day Transaction Volume Data Processor for Selected Wallet
+  const monthlyVolumeData = useMemo(() => {
+    const days = Array.from({ length: 30 }, (_, i) => {
+      const d = new Date();
+      d.setDate(d.getDate() - (29 - i));
+      return d.toISOString().split('T')[0];
+    });
+
+    return days.map(date => {
+      // Filter transactions for this specific day and the currently selected senderId
+      const dailyTxs = transactions.filter(tx => 
+        tx.timestamp.startsWith(date) && 
+        tx.status === 'SUCCESS' && 
+        (tx.senderWalletId === senderId || tx.receiverWalletId === senderId)
+      );
+      
+      const volume = dailyTxs.reduce((sum, tx) => sum + tx.amount, 0);
+      
+      const displayDate = new Date(date).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+
+      return {
+        date: displayDate,
+        fullDate: date,
+        volume
+      };
+    });
+  }, [transactions, lang, senderId]);
 
   // Mock 2FA Verification State
   const [show2FAModal, setShow2FAModal] = useState(false);
@@ -247,6 +281,7 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
       const dateStr = new Date(tx.timestamp).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US');
       return (
         tx.receiverName.toLowerCase().includes(term) ||
+        tx.senderName.toLowerCase().includes(term) ||
         tx.id.toLowerCase().includes(term) ||
         tx.reference.toLowerCase().includes(term) ||
         dateStr.includes(term) ||
@@ -601,11 +636,11 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
         <div className="flex-1 bg-slate-900/60 border border-slate-800 rounded-2xl p-4 shadow-lg backdrop-blur-md flex items-center gap-3">
           <div className="relative flex-1">
             <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none">
-              <Hash className="w-4 h-4 text-slate-500" />
+              <Search className="w-4 h-4 text-slate-500" />
             </div>
             <input
               type="text"
-              placeholder={lang === 'bn' ? 'মার্চেন্ট, রেফারেন্স আইডি বা তারিখ দিয়ে খুঁজুন...' : 'Search transactions by merchant, reference ID, or date...'}
+              placeholder={lang === 'bn' ? 'প্রেরক, প্রাপক, রেফারেন্স আইডি বা তারিখ দিয়ে খুঁজুন...' : 'Search transactions by sender, receiver, reference, or date...'}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full bg-slate-950 border border-slate-800 rounded-xl py-2 pl-10 pr-4 text-sm text-slate-200 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500/30 transition-all"
@@ -814,6 +849,95 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-400">{lang === 'bn' ? 'গড় দৈনিক ভলিউম:' : 'Avg Daily Volume:'}</span>
               <span className="text-sm font-bold text-indigo-400">৳ {Math.round(trendData.reduce((s, i) => s + i.volume, 0) / 7).toLocaleString()}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* SECTION: 30-DAY MONTHLY VOLUME INSIGHTS */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 shadow-xl space-y-6">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div>
+            <h3 className="text-xl font-bold text-slate-100 flex items-center gap-2">
+              <BarChart className="w-5 h-5 text-blue-400" />
+              <span>{lang === 'bn' ? '৩০ দিনের লেনদেন ভলিউম গ্রাফ' : '30-Day Monthly Transaction Volume'}</span>
+            </h3>
+            <p className="text-xs text-slate-400 mt-1">
+              {lang === 'bn' 
+                ? `ওয়ালেট: ${selectedSenderWallet?.ownerName} (${selectedSenderWallet?.accountNo}) এর গত ৩০ দিনের লেনদেনের পরিমাণ।` 
+                : `Daily transaction volume for ${selectedSenderWallet?.ownerName} (${selectedSenderWallet?.accountNo}) over the last 30 days.`}
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="bg-blue-500/10 text-blue-300 border border-blue-500/30 px-3 py-1.5 rounded-xl text-[10px] font-bold flex items-center gap-2">
+              <div className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
+              {lang === 'bn' ? 'লাইভ ডাটা' : 'LIVE DATA'}
+            </div>
+          </div>
+        </div>
+
+        <div className="h-[300px] w-full bg-slate-950/40 rounded-xl p-4 border border-slate-800/50">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={monthlyVolumeData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} opacity={0.4} />
+              <XAxis 
+                dataKey="date" 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#64748b', fontSize: 9 }}
+                dy={10}
+                interval={2}
+              />
+              <YAxis 
+                axisLine={false} 
+                tickLine={false} 
+                tick={{ fill: '#64748b', fontSize: 9 }}
+                tickFormatter={(value) => `৳${value >= 1000 ? (value / 1000).toFixed(0) + 'k' : value}`}
+              />
+              <Tooltip 
+                contentStyle={{ 
+                  backgroundColor: '#0f172a', 
+                  border: '1px solid #334155', 
+                  borderRadius: '12px', 
+                  fontSize: '11px',
+                  boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'
+                }}
+                itemStyle={{ color: '#60a5fa' }}
+                cursor={{ stroke: '#334155', strokeWidth: 2 }}
+                formatter={(value: number) => [`৳${value.toLocaleString()}`, lang === 'bn' ? 'ভলিউম' : 'Daily Volume']}
+              />
+              <Line 
+                type="monotone" 
+                dataKey="volume" 
+                stroke="#3b82f6" 
+                strokeWidth={3} 
+                dot={{ r: 3, fill: '#3b82f6', strokeWidth: 0 }}
+                activeDot={{ r: 6, fill: '#fff', stroke: '#3b82f6', strokeWidth: 2 }}
+                animationDuration={2000}
+                connectNulls
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/50">
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">{lang === 'bn' ? 'সর্বোচ্চ দৈনিক ভলিউম' : 'Peak Daily Volume'}</div>
+            <div className="text-lg font-bold text-white">৳ {Math.max(...monthlyVolumeData.map(d => d.volume)).toLocaleString()}</div>
+          </div>
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/50">
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">{lang === 'bn' ? 'মোট ৩০ দিনের ভলিউম' : 'Total 30-Day Volume'}</div>
+            <div className="text-lg font-bold text-blue-400">৳ {monthlyVolumeData.reduce((s, d) => s + d.volume, 0).toLocaleString()}</div>
+          </div>
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/50">
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">{lang === 'bn' ? 'গড় ভলিউম (দৈনিক)' : 'Average Volume'}</div>
+            <div className="text-lg font-bold text-slate-300">৳ {Math.round(monthlyVolumeData.reduce((s, d) => s + d.volume, 0) / 30).toLocaleString()}</div>
+          </div>
+          <div className="bg-slate-950/60 p-4 rounded-xl border border-slate-800/50">
+            <div className="text-[10px] text-slate-500 font-bold uppercase tracking-widest mb-1">{lang === 'bn' ? 'লেনদেনের স্থিতি' : 'Wallet Status'}</div>
+            <div className="text-lg font-bold text-emerald-400 flex items-center gap-2">
+              <CheckCircle2 className="w-5 h-5" />
+              {lang === 'bn' ? 'সক্রিয়' : 'Healthy'}
             </div>
           </div>
         </div>

@@ -723,15 +723,21 @@ app.get('/api/admin/profile', (req: Request, res: Response) => {
 
 // Get Wallets, Transactions, Rails, Ledger, Alerts
 app.get('/api/ledger/overview', (req: Request, res: Response) => {
-  res.json({
-    wallets,
-    rails,
-    transactions: transactions.slice(0, 30),
-    ledgerEntries: ledgerEntries.slice(0, 50),
-    queueTasks: queueTasks.slice(0, 20),
-    webhookEvents: webhookEvents.slice(0, 20),
-    anomalyAlerts: anomalyAlerts.slice(0, 10),
-  });
+  try {
+    const data = {
+      wallets,
+      rails,
+      transactions: transactions.slice(0, 30),
+      ledgerEntries: ledgerEntries.slice(0, 50),
+      queueTasks: queueTasks.slice(0, 20),
+      webhookEvents: webhookEvents.slice(0, 20),
+      anomalyAlerts: anomalyAlerts.slice(0, 10),
+    };
+    res.json(data);
+  } catch (err: any) {
+    console.error('CRITICAL ERROR in /api/ledger/overview:', err);
+    res.status(500).json({ error: 'Failed to generate overview data', details: err.message });
+  }
 });
 
 // Live Multi-Currency Exchange Rates API

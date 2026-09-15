@@ -70,6 +70,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const prevTransactionsRef = useRef<Transaction[]>([]);
   const isFirstLoadRef = useRef(true);
+  const isFetchingRef = useRef(false);
 
   const handleToggleNotifications = async () => {
     if (notificationsEnabled) {
@@ -92,6 +93,8 @@ export default function App() {
 
   // Fetch Overview & Admin Data
   const fetchData = useCallback(async (retries = 3) => {
+    if (isFetchingRef.current) return;
+    isFetchingRef.current = true;
     try {
       const res = await fetch('/api/ledger/overview');
       if (res.ok) {
@@ -154,10 +157,15 @@ export default function App() {
       }
     } catch (err) {
       console.error('Fetch exception in ledger overview:', err);
+      if (err instanceof Error) {
+        console.error('Error name:', err.name);
+        console.error('Error message:', err.message);
+      }
       if (retries > 0) {
         setTimeout(() => fetchData(retries - 1), 2000);
       }
     } finally {
+      isFetchingRef.current = false;
       setIsLoading(false);
     }
   }, [notificationsEnabled, lang]);
@@ -188,9 +196,14 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetchData();
-    checkGoogleDriveStatus();
-    registerServiceWorker();
+    // Short delay to ensure server is ready
+    const timer = setTimeout(() => {
+      fetchData();
+      checkGoogleDriveStatus();
+    }, 1000);
+    
+    // registerServiceWorker(); // Disabled manual registration to avoid conflict with VitePWA
+    registerServiceWorker(); // Actually, let's keep it but handle errors gracefully
 
     // Check existing notification permission
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -204,7 +217,10 @@ export default function App() {
       }
     };
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      clearTimeout(timer);
+    };
   }, []);
 
   // Connect Google Drive (OAuth)
