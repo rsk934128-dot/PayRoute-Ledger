@@ -5,7 +5,7 @@ import {
   auth, 
   googleProvider, 
   signInWithPopup, 
-  firebaseSignOut, 
+  signOut as firebaseSignOut, 
   onAuthStateChanged, 
   db, 
   collection, 

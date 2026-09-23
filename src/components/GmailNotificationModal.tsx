@@ -20,6 +20,8 @@ interface GmailNotificationModalProps {
   isOpen: boolean;
   onClose: () => void;
   lang: 'en' | 'bn';
+  driveConnected: boolean;
+  onConnectDrive: () => void;
   defaultRecipientEmail?: string;
   defaultSubject?: string;
   defaultMessage?: string;
@@ -29,6 +31,8 @@ export const GmailNotificationModal: React.FC<GmailNotificationModalProps> = ({
   isOpen,
   onClose,
   lang,
+  driveConnected,
+  onConnectDrive,
   defaultRecipientEmail = 'khokumoni30@gmail.com',
   defaultSubject = '⚡ PayRoute Financial Security Alert',
   defaultMessage = 'Important notification regarding your transaction ledger state and gateway routing.',
@@ -188,7 +192,32 @@ export const GmailNotificationModal: React.FC<GmailNotificationModalProps> = ({
             </div>
           )}
 
-          {/* Quick Presets */}
+          {!driveConnected ? (
+            <div className="bg-slate-950 p-6 rounded-2xl border border-slate-800 text-center space-y-4">
+              <div className="w-16 h-16 bg-amber-500/10 border border-amber-500/30 rounded-full flex items-center justify-center text-amber-400 mx-auto">
+                <AlertTriangle className="w-8 h-8" />
+              </div>
+              <div className="space-y-2">
+                <h4 className="text-slate-100 font-bold">
+                  {lang === 'bn' ? 'জিমেইল কানেক্ট করা নেই' : 'Gmail Not Connected'}
+                </h4>
+                <p className="text-xs text-slate-400 max-w-xs mx-auto">
+                  {lang === 'bn'
+                    ? 'ইমেইল নোটিফিকেশন পাঠানোর জন্য প্রথমে আপনার গুগল একাউন্ট কানেক্ট করুন।'
+                    : 'Please connect your Google account to authorize the PayRoute Financial Engine to send emails via Gmail.'}
+                </p>
+              </div>
+              <button
+                onClick={onConnectDrive}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl text-xs font-bold shadow-lg shadow-indigo-600/25 flex items-center gap-2 mx-auto transition-all"
+              >
+                <ExternalLink className="w-4 h-4" />
+                {lang === 'bn' ? 'গুগল কানেক্ট করুন' : 'Connect Google Workspace'}
+              </button>
+            </div>
+          ) : (
+            <>
+              {/* Quick Presets */}
           <div className="space-y-2">
             <label className="text-xs font-bold text-slate-300 flex items-center space-x-1">
               <Zap className="w-3.5 h-3.5 text-amber-400" />
@@ -368,9 +397,11 @@ export const GmailNotificationModal: React.FC<GmailNotificationModalProps> = ({
               </div>
             </div>
           )}
+        </>
+      )}
 
-        </div>
-      </div>
     </div>
-  );
+  </div>
+</div>
+);
 };

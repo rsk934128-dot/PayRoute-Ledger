@@ -49,6 +49,7 @@ interface NavbarProps {
   onDisconnectDrive: () => void;
   onOpenExportModal: () => void;
   onOpenGmailModal?: () => void;
+  onOpenSMSModal?: () => void;
   onRefreshData: () => void;
   autoSync: boolean;
   setAutoSync: (val: boolean) => void;
@@ -67,6 +68,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onDisconnectDrive,
   onOpenExportModal,
   onOpenGmailModal,
+  onOpenSMSModal,
   onRefreshData,
   autoSync,
   setAutoSync,
@@ -232,6 +234,18 @@ export const Navbar: React.FC<NavbarProps> = ({
               >
                 <Mail className="w-3.5 h-3.5 text-red-400" />
                 <span className="hidden md:inline">{lang === 'bn' ? 'জিমেইল নোটিফিকেশন' : 'Gmail Notification'}</span>
+              </button>
+            )}
+
+            {/* SMS Notification Button */}
+            {onOpenSMSModal && (
+              <button
+                onClick={onOpenSMSModal}
+                className="flex items-center space-x-1.5 bg-gradient-to-r from-emerald-600/20 to-teal-600/20 hover:from-emerald-600/30 hover:to-teal-600/30 text-emerald-200 border border-emerald-500/30 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all shadow-sm"
+                title={lang === 'bn' ? 'এসএমএস নোটিফিকেশন পাঠান' : 'Send SMS Notification'}
+              >
+                <MessageCircle className="w-3.5 h-3.5 text-emerald-400" />
+                <span className="hidden md:inline">{lang === 'bn' ? 'এসএমএস' : 'SMS'}</span>
               </button>
             )}
 

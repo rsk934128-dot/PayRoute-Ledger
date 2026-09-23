@@ -6,6 +6,25 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import { google } from 'googleapis';
 import { OAuth2Client } from 'google-auth-library';
+import twilio from 'twilio';
+import Stripe from 'stripe';
+import { initializeApp, getApps, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from './firebase-applet-config.json';
+
+// Initialize Firebase Admin
+if (!getApps().length) {
+  initializeApp({
+    projectId: firebaseConfig.projectId,
+  });
+}
+const db = getFirestore(firebaseConfig.firestoreDatabaseId);
+
+// Initialize Stripe
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_mock_key', {
+  apiVersion: '2025-02-11-preview',
+});
+
 import { 
   Wallet, 
   PaymentRail, 
@@ -21,7 +40,8 @@ import {
   WalletLimit,
   PassportEndorsement,
   VirtualCard,
-  GmailNotificationLog
+  GmailNotificationLog,
+  SMSNotificationLog
 } from './src/types';
 import { 
   INITIAL_WALLETS, 
@@ -44,14 +64,38 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Google OAuth Token Memory Cache
+let googleOAuthTokens: {
+  access_token?: string;
+  refresh_token?: string;
+  expires_at?: number;
+  user_email?: string;
+} | null = null;
+
 // Google OAuth Helper function for Workspace APIs (Gmail)
 export function getOAuth2Client(req: Request): any {
-  const accessToken = req.headers['x-goog-authenticated-user-token'] as string;
-  const refreshToken = req.headers['x-goog-authenticated-user-refresh-token'] as string;
+  let accessToken = req.headers['x-goog-authenticated-user-token'] as string;
+  let refreshToken = req.headers['x-goog-authenticated-user-refresh-token'] as string;
+
+  // Fallback 1: Authorization header
+  if (!accessToken && req.headers.authorization) {
+    const parts = req.headers.authorization.split(' ');
+    if (parts.length === 2 && parts[0].toLowerCase() === 'bearer') {
+      accessToken = parts[1];
+    }
+  }
+
+  // Fallback 2: Internal Memory Cache (googleOAuthTokens)
+  if (!accessToken && googleOAuthTokens?.access_token) {
+    accessToken = googleOAuthTokens.access_token;
+  }
+  if (!refreshToken && googleOAuthTokens?.refresh_token) {
+    refreshToken = googleOAuthTokens.refresh_token;
+  }
 
   const client = new google.auth.OAuth2(
-    process.env.OAUTH_CLIENT_ID,
-    process.env.OAUTH_CLIENT_SECRET
+    process.env.GOOGLE_CLIENT_ID || process.env.OAUTH_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET || process.env.OAUTH_CLIENT_SECRET
   );
 
   if (accessToken || refreshToken) {
@@ -64,134 +108,97 @@ export function getOAuth2Client(req: Request): any {
   return client;
 }
 
-let gmailNotificationLogs: GmailNotificationLog[] = [];
+// ==========================================
+// DATA FETCHING HELPERS (FIRESTORE)
+// ==========================================
+
+async function getWallets(): Promise<Wallet[]> {
+  const snapshot = await db.collection('wallets').get();
+  if (snapshot.empty && INITIAL_WALLETS.length > 0) {
+    // Seed database if empty
+    const batch = db.batch();
+    for (const w of INITIAL_WALLETS) {
+      batch.set(db.collection('wallets').doc(w.id), w);
+    }
+    await batch.commit();
+    return INITIAL_WALLETS;
+  }
+  return snapshot.docs.map(doc => doc.data() as Wallet);
+}
+
+async function getTransactions(): Promise<Transaction[]> {
+  const snapshot = await db.collection('transactions').orderBy('timestamp', 'desc').get();
+  if (snapshot.empty && INITIAL_TRANSACTIONS.length > 0) {
+    const batch = db.batch();
+    for (const t of INITIAL_TRANSACTIONS) {
+      batch.set(db.collection('transactions').doc(t.id), t);
+    }
+    await batch.commit();
+    return INITIAL_TRANSACTIONS;
+  }
+  return snapshot.docs.map(doc => doc.data() as Transaction);
+}
+
+async function getRails(): Promise<PaymentRail[]> {
+  const snapshot = await db.collection('paymentRails').get();
+  if (snapshot.empty && INITIAL_PAYMENT_RAILS.length > 0) {
+    const batch = db.batch();
+    for (const r of INITIAL_PAYMENT_RAILS) {
+      batch.set(db.collection('paymentRails').doc(r.id), r);
+    }
+    await batch.commit();
+    return INITIAL_PAYMENT_RAILS;
+  }
+  return snapshot.docs.map(doc => doc.data() as PaymentRail);
+}
+
+async function getLedgerEntries(): Promise<LedgerEntry[]> {
+  const snapshot = await db.collection('ledgerEntries').orderBy('timestamp', 'desc').get();
+  if (snapshot.empty && INITIAL_LEDGER_ENTRIES.length > 0) {
+    const batch = db.batch();
+    for (const e of INITIAL_LEDGER_ENTRIES) {
+      batch.set(db.collection('ledgerEntries').doc(e.id), e);
+    }
+    await batch.commit();
+    return INITIAL_LEDGER_ENTRIES;
+  }
+  return snapshot.docs.map(doc => doc.data() as LedgerEntry);
+}
+
+async function getWebhookEvents(): Promise<WebhookEvent[]> {
+  const snapshot = await db.collection('webhookEvents').orderBy('timestamp', 'desc').get();
+  return snapshot.docs.map(doc => doc.data() as WebhookEvent);
+}
+
+async function getAnomalyAlerts(): Promise<AnomalyAlert[]> {
+  const snapshot = await db.collection('anomalyAlerts').orderBy('timestamp', 'desc').get();
+  return snapshot.docs.map(doc => doc.data() as AnomalyAlert);
+}
+
+async function getGmailLogs(): Promise<GmailNotificationLog[]> {
+  const snapshot = await db.collection('gmailLogs').orderBy('sentAt', 'desc').get();
+  return snapshot.docs.map(doc => doc.data() as GmailNotificationLog);
+}
+
+async function getSMSLogs(): Promise<SMSNotificationLog[]> {
+  const snapshot = await db.collection('smsLogs').orderBy('sentAt', 'desc').get();
+  return snapshot.docs.map(doc => doc.data() as SMSNotificationLog);
+}
 
 const PORT = 3000;
 
 // ==========================================
-// IN-MEMORY ACID DATA STORE & STATE MUTEX
+// STATE & CACHE (CONVERTED TO FIRESTORE)
 // ==========================================
-let wallets: Wallet[] = [...INITIAL_WALLETS];
-let rails: PaymentRail[] = [...INITIAL_PAYMENT_RAILS];
-let transactions: Transaction[] = [...INITIAL_TRANSACTIONS];
-let ledgerEntries: LedgerEntry[] = [...INITIAL_LEDGER_ENTRIES];
-let queueTasks: QueueTask[] = [];
-let webhookEvents: WebhookEvent[] = [
-  {
-    id: 'WH-880912',
-    transactionId: 'TXN-908122-882',
-    merchantId: 'WAL-MERCH-301',
-    eventType: 'transaction.failed',
-    payload: {
-      event: 'payment.failed',
-      transactionId: 'TXN-908122-882',
-      amount: 12500.00,
-      currency: 'BDT',
-      merchantName: 'Daraz Online Express',
-      errorReason: 'Merchant Webhook Gateway Timeout (504)'
-    },
-    status: 'FAILED',
-    statusCode: 504,
-    timestamp: new Date(Date.now() - 15 * 60000).toISOString(),
-    signature: '7f9a12c8b3e4019a8d712f6a90823b1109a87234125f67a912e345b678c901ab',
-    endpointUrl: 'https://api.daraz.com.bd/v1/payroute/webhook',
-    attemptCount: 2,
-    maxAttempts: 5,
-    lastAttemptAt: new Date(Date.now() - 10 * 60000).toISOString(),
-    nextRetryDelaySeconds: 8, // 2^2 * 2 = 8s
-    failureReason: 'HTTP 504 Gateway Timeout: Merchant API failed to respond within 5000ms.',
-    deliveryLogs: [
-      {
-        attempt: 1,
-        timestamp: new Date(Date.now() - 15 * 60000).toISOString(),
-        statusCode: 504,
-        status: 'FAILED',
-        responseBody: '{"error": "Gateway Timeout", "code": 504, "message": "Upstream merchant socket disconnected"}',
-        delaySeconds: 0,
-        endpointUrl: 'https://api.daraz.com.bd/v1/payroute/webhook'
-      },
-      {
-        attempt: 2,
-        timestamp: new Date(Date.now() - 10 * 60000).toISOString(),
-        statusCode: 500,
-        status: 'FAILED',
-        responseBody: '{"error": "Internal Server Error", "code": 500, "message": "Database transaction lock timeout"}',
-        delaySeconds: 2,
-        endpointUrl: 'https://api.daraz.com.bd/v1/payroute/webhook'
-      }
-    ]
-  },
-  {
-    id: 'WH-880911',
-    transactionId: 'TXN-908122-883',
-    merchantId: 'WAL-USER-101',
-    eventType: 'transaction.failed',
-    payload: {
-      event: 'transfer.rejected',
-      transactionId: 'TXN-908122-883',
-      amount: 3500.00,
-      currency: 'BDT',
-      recipient: 'Rahat Hossain',
-      errorReason: 'SSL Certificate Handshake Error'
-    },
-    status: 'FAILED',
-    statusCode: 502,
-    timestamp: new Date(Date.now() - 25 * 60000).toISOString(),
-    signature: '3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b',
-    endpointUrl: 'https://hooks.payroute.net/callback/rahathossain',
-    attemptCount: 1,
-    maxAttempts: 5,
-    lastAttemptAt: new Date(Date.now() - 25 * 60000).toISOString(),
-    nextRetryDelaySeconds: 4, // 2^1 * 2 = 4s
-    failureReason: 'HTTP 502 Bad Gateway: Upstream SSL certificate verification failed.',
-    deliveryLogs: [
-      {
-        attempt: 1,
-        timestamp: new Date(Date.now() - 25 * 60000).toISOString(),
-        statusCode: 502,
-        status: 'FAILED',
-        responseBody: '{"error": "Bad Gateway", "reason": "Self-signed certificate in chain"}',
-        delaySeconds: 0,
-        endpointUrl: 'https://hooks.payroute.net/callback/rahathossain'
-      }
-    ]
-  },
-  {
-    id: 'WH-880910',
-    transactionId: 'TXN-908122-881',
-    merchantId: 'WAL-USER-101',
-    eventType: 'transaction.success',
-    payload: {
-      event: 'salary.disbursed',
-      transactionId: 'TXN-908122-881',
-      amount: 45000.00,
-      currency: 'BDT',
-      sender: 'TechCraft Solutions Ltd.',
-      receiver: 'Rahat Hossain'
-    },
-    status: 'DELIVERED',
-    statusCode: 200,
-    timestamp: new Date(Date.now() - 45 * 60000).toISOString(),
-    signature: '8f4e5a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f',
-    endpointUrl: 'https://webhook.site/payroute-payroll-callback',
-    attemptCount: 1,
-    maxAttempts: 5,
-    lastAttemptAt: new Date(Date.now() - 45 * 60000).toISOString(),
-    nextRetryDelaySeconds: 0,
-    deliveryLogs: [
-      {
-        attempt: 1,
-        timestamp: new Date(Date.now() - 45 * 60000).toISOString(),
-        statusCode: 200,
-        status: 'DELIVERED',
-        responseBody: '{"success": true, "acknowledged": true, "receivedAt": "2026-07-30T10:10:00Z"}',
-        delaySeconds: 0,
-        endpointUrl: 'https://webhook.site/payroute-payroll-callback'
-      }
-    ]
-  }
-];
+let wallets: Wallet[] = [];
+let transactions: Transaction[] = [];
+let rails: PaymentRail[] = [];
+let ledgerEntries: LedgerEntry[] = [];
+let webhookEvents: WebhookEvent[] = [];
 let anomalyAlerts: AnomalyAlert[] = [];
+let queueTasks: QueueTask[] = [];
+let gmailNotificationLogs: GmailNotificationLog[] = [];
+let smsNotificationLogs: SMSNotificationLog[] = [];
 const processedIdempotencyKeys = new Set<string>();
 
 // Transaction Limits & Caps Store
@@ -205,8 +212,8 @@ let walletLimitConfigs: Map<string, { dailyCap: number; monthlyCap: number; aler
 
 // Active System Administrator User Profile
 let systemAdminUser = {
-  email: 'rubels1k994@gmail.com',
-  name: 'Rubel Admin',
+  email: 'khokumoni30@gmail.com',
+  name: 'Khokumoni Admin',
   role: 'SUPER_ADMIN',
   status: 'ACTIVE',
   lastActive: new Date().toISOString()
@@ -267,7 +274,7 @@ let virtualCards: VirtualCard[] = [
 ];
 
 
-function getWalletSpendingStats(walletId: string): WalletLimit {
+async function getWalletSpendingStats(walletId: string): Promise<WalletLimit> {
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
@@ -275,6 +282,7 @@ function getWalletSpendingStats(walletId: string): WalletLimit {
   let currentDailySpent = 0;
   let currentMonthlySpent = 0;
 
+  const transactions = await getTransactions();
   for (const tx of transactions) {
     if (tx.senderWalletId === walletId && tx.status === 'SUCCESS') {
       const txTime = new Date(tx.timestamp).getTime();
@@ -298,6 +306,7 @@ function getWalletSpendingStats(walletId: string): WalletLimit {
     status = 'WARNING';
   }
 
+  const wallets = await getWallets();
   const wallet = wallets.find(w => w.id === walletId);
 
   return {
@@ -418,37 +427,9 @@ let externalBankAccounts: ExternalBankAccount[] = [
 
 let pisPayments: OpenBankingPISPayment[] = [];
 
-// Simple mutex implementation to ensure strict ACID isolation in Node.js event loop
-let isProcessingTransaction = false;
-const transactionQueue: (() => void)[] = [];
-
-function acquireLock(): Promise<void> {
-  return new Promise((resolve) => {
-    if (!isProcessingTransaction) {
-      isProcessingTransaction = true;
-      resolve();
-    } else {
-      transactionQueue.push(resolve);
-    }
-  });
-}
-
-function releaseLock() {
-  if (transactionQueue.length > 0) {
-    const next = transactionQueue.shift();
-    if (next) next();
-  } else {
-    isProcessingTransaction = false;
-  }
-}
-
-// Google OAuth Token Memory Cache
-let googleOAuthTokens: {
-  access_token?: string;
-  refresh_token?: string;
-  expires_at?: number;
-  user_email?: string;
-} | null = null;
+// Mutex Lock for In-Memory ACID (DEPRECATED - FIRESTORE TRANSACTIONS USED INSTEAD)
+function acquireLock(): Promise<void> { return Promise.resolve(); }
+function releaseLock() {}
 
 // Helper: Calculate SHA-256 for Immutable Ledger Cryptographic Check
 function calculateTxHash(tx: Partial<Transaction>): string {
@@ -473,7 +454,7 @@ app.get('/api/auth/google/url', (req: Request, res: Response) => {
   const clientId = process.env.GOOGLE_CLIENT_ID || '';
   const appUrl = getAppUrl(req);
   const redirectUri = `${appUrl}/api/auth/google/callback`;
-  const scope = encodeURIComponent('https://www.googleapis.com/auth/drive.file email profile');
+  const scope = encodeURIComponent('https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/gmail.send email profile');
   
   const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(
     redirectUri
@@ -722,8 +703,17 @@ app.get('/api/admin/profile', (req: Request, res: Response) => {
 });
 
 // Get Wallets, Transactions, Rails, Ledger, Alerts
-app.get('/api/ledger/overview', (req: Request, res: Response) => {
+app.get('/api/ledger/overview', async (req: Request, res: Response) => {
   try {
+    const [wallets, rails, transactions, ledgerEntries, webhookEvents, anomalyAlerts] = await Promise.all([
+      getWallets(),
+      getRails(),
+      getTransactions(),
+      getLedgerEntries(),
+      getWebhookEvents(),
+      getAnomalyAlerts()
+    ]);
+
     const data = {
       wallets,
       rails,
@@ -762,101 +752,187 @@ app.get('/api/exchange-rates', (req: Request, res: Response) => {
 
 // Execute Instant Currency Swap/Conversion within Wallet
 app.post('/api/wallets/convert', async (req: Request, res: Response) => {
-  await acquireLock();
-
   try {
     const { walletId, fromCurrency, toCurrency, amount } = req.body;
     const convertAmt = Number(amount);
 
     if (!walletId || !fromCurrency || !toCurrency || isNaN(convertAmt) || convertAmt <= 0) {
-      releaseLock();
       return res.status(400).json({ error: 'Invalid conversion payload arguments.' });
     }
 
-    const wallet = wallets.find(w => w.id === walletId);
-    if (!wallet) {
-      releaseLock();
-      return res.status(404).json({ error: 'Wallet account not found.' });
-    }
+    const result = await db.runTransaction(async (transaction) => {
+      const walletRef = db.collection('wallets').doc(walletId);
+      const walletDoc = await transaction.get(walletRef);
 
-    if (wallet.status !== 'ACTIVE') {
-      releaseLock();
-      return res.status(403).json({ error: `Wallet is currently ${wallet.status}.` });
-    }
+      if (!walletDoc.exists) {
+        throw new Error('Wallet account not found.');
+      }
 
-    if (!wallet.balances) {
-      wallet.balances = { [wallet.currency]: wallet.balance };
-    }
+      const wallet = walletDoc.data() as Wallet;
 
-    const currentFromBalance = wallet.balances[fromCurrency] || 0;
-    if (currentFromBalance < convertAmt) {
-      releaseLock();
-      return res.status(400).json({ 
-        error: `Insufficient ${fromCurrency} balance. Available: ${currentFromBalance} ${fromCurrency}, Required: ${convertAmt} ${fromCurrency}` 
+      if (wallet.status !== 'ACTIVE') {
+        throw new Error(`Wallet is currently ${wallet.status}.`);
+      }
+
+      if (!wallet.balances) {
+        wallet.balances = { [wallet.currency]: wallet.balance };
+      }
+
+      const currentFromBalance = wallet.balances[fromCurrency] || 0;
+      if (currentFromBalance < convertAmt) {
+        throw new Error(`Insufficient ${fromCurrency} balance.`);
+      }
+
+      // Exchange rates relative to USD
+      const ratesMap: Record<string, number> = {
+        USD: 1.0,
+        BDT: 121.50,
+        EUR: 0.92,
+        GBP: 0.78,
+        INR: 83.50,
+        CAD: 1.36,
+        AED: 3.67,
+        SAR: 3.75,
+        JPY: 155.20
+      };
+
+      const fromRate = ratesMap[fromCurrency] || 1.0;
+      const toRate = ratesMap[toCurrency] || 1.0;
+
+      const amtInUSD = convertAmt / fromRate;
+      const convertedAmt = Math.round((amtInUSD * toRate) * 100) / 100;
+
+      const newBalances = { ...wallet.balances };
+      newBalances[fromCurrency] = Math.round((currentFromBalance - convertAmt) * 100) / 100;
+      newBalances[toCurrency] = Math.round(((newBalances[toCurrency] || 0) + convertedAmt) * 100) / 100;
+
+      // Update primary balance if matches primary currency
+      let newPrimaryBalance = wallet.balance;
+      if (fromCurrency === wallet.currency) {
+        newPrimaryBalance = newBalances[fromCurrency];
+      } else if (toCurrency === wallet.currency) {
+        newPrimaryBalance = newBalances[toCurrency];
+      }
+
+      transaction.update(walletRef, {
+        balances: newBalances,
+        balance: newPrimaryBalance,
+        lastUpdated: new Date().toISOString()
       });
-    }
 
-    // Exchange rates relative to USD
-    const ratesMap: Record<string, number> = {
-      USD: 1.0,
-      BDT: 121.50,
-      EUR: 0.92,
-      GBP: 0.78,
-      INR: 83.50,
-      CAD: 1.36,
-      AED: 3.67,
-      SAR: 3.75,
-      JPY: 155.20
-    };
-
-    const fromRate = ratesMap[fromCurrency] || 1.0;
-    const toRate = ratesMap[toCurrency] || 1.0;
-
-    // Convert
-    const amtInUSD = convertAmt / fromRate;
-    const convertedAmt = Math.round((amtInUSD * toRate) * 100) / 100;
-
-    // Mutate wallet balances
-    wallet.balances[fromCurrency] = Math.round((currentFromBalance - convertAmt) * 100) / 100;
-    wallet.balances[toCurrency] = Math.round(((wallet.balances[toCurrency] || 0) + convertedAmt) * 100) / 100;
-
-    // Update primary balance if converted from/to primary currency
-    if (fromCurrency === wallet.currency) {
-      wallet.balance = wallet.balances[wallet.currency];
-    } else if (toCurrency === wallet.currency) {
-      wallet.balance = wallet.balances[wallet.currency];
-    }
-
-    wallet.lastUpdated = new Date().toISOString();
-
-    // Create Ledger Log Entry
-    const ledgerEntry: LedgerEntry = {
-      id: `LEDGER-SWAP-${Date.now().toString().slice(-6)}`,
-      transactionId: `TXN-SWAP-${Date.now().toString().slice(-8)}`,
-      walletId: wallet.id,
-      walletOwner: wallet.ownerName,
-      type: 'CREDIT',
-      amount: convertedAmt,
-      balanceAfter: wallet.balances[toCurrency],
-      currency: toCurrency as any,
-      timestamp: new Date().toISOString(),
-      description: `Converted ${convertAmt} ${fromCurrency} to ${convertedAmt} ${toCurrency} (Rate: 1 ${fromCurrency} = ${(toRate / fromRate).toFixed(4)} ${toCurrency})`
-    };
-
-    ledgerEntries.unshift(ledgerEntry);
-
-    releaseLock();
+      return { convertedAmt, newBalances };
+    });
 
     res.json({
       success: true,
-      message: `Successfully swapped ${convertAmt} ${fromCurrency} to ${convertedAmt} ${toCurrency}`,
-      wallet,
-      convertedAmount: convertedAmt,
-      ledgerEntry
+      message: `Successfully converted ${convertAmt} ${fromCurrency} to ${result.convertedAmt.toFixed(2)} ${toCurrency}`,
+      convertedAmount: result.convertedAmt,
+      balances: result.newBalances
     });
   } catch (err: any) {
-    releaseLock();
-    res.status(500).json({ error: err.message || 'Internal conversion error.' });
+    console.error('Conversion Error:', err);
+    res.status(500).json({ error: err.message || 'Conversion failed' });
+  }
+});
+
+// ==========================================
+// STRIPE PAYMENT INTEGRATION
+// ==========================================
+
+app.post('/api/payments/stripe/create-payment-intent', async (req: Request, res: Response) => {
+  try {
+    const { amount, currency, walletId } = req.body;
+
+    if (!amount || !currency || !walletId) {
+      return res.status(400).json({ error: 'Missing required parameters (amount, currency, walletId)' });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.create({
+      amount: Math.round(amount * 100), // Stripe expects cents/smallest unit
+      currency: currency.toLowerCase(),
+      metadata: { walletId },
+      automatic_payment_methods: {
+        enabled: true,
+      },
+    });
+
+    res.json({
+      clientSecret: paymentIntent.client_secret,
+    });
+  } catch (err: any) {
+    console.error('Stripe Intent Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/payments/stripe/confirm-success', async (req: Request, res: Response) => {
+  try {
+    const { paymentIntentId, walletId } = req.body;
+    
+    if (!paymentIntentId || !walletId) {
+      return res.status(400).json({ error: 'Missing paymentIntentId or walletId' });
+    }
+
+    const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
+    
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({ error: 'Payment has not succeeded yet' });
+    }
+
+    const amount = paymentIntent.amount / 100;
+    const currency = (paymentIntent.currency || 'usd').toUpperCase() as Currency;
+
+    await db.runTransaction(async (transaction) => {
+      const walletRef = db.collection('wallets').doc(walletId);
+      const walletDoc = await transaction.get(walletRef);
+
+      if (!walletDoc.exists) {
+        throw new Error('Wallet not found');
+      }
+
+      const wallet = walletDoc.data() as Wallet;
+      const currentBalances = wallet.balances || { [wallet.currency]: wallet.balance };
+      
+      const newBalances = { ...currentBalances };
+      newBalances[currency] = Math.round(((newBalances[currency] || 0) + amount) * 100) / 100;
+
+      let newPrimaryBalance = wallet.balance;
+      if (currency === wallet.currency) {
+        newPrimaryBalance = newBalances[currency];
+      }
+
+      transaction.update(walletRef, {
+        balances: newBalances,
+        balance: newPrimaryBalance,
+        lastUpdated: new Date().toISOString()
+      });
+
+      const txnId = `TXN-STRIPE-${Date.now()}`;
+      const txnRef = db.collection('transactions').doc(txnId);
+      transaction.set(txnRef, {
+        id: txnId,
+        senderWalletId: 'STRIPE_EXTERNAL',
+        senderName: 'Stripe Gateway',
+        receiverWalletId: walletId,
+        receiverName: wallet.ownerName,
+        amount,
+        fee: 0,
+        currency,
+        status: 'SUCCESS',
+        requestedRail: 'STRIPE',
+        executedRail: 'STRIPE',
+        wasRerouted: false,
+        reference: `Stripe Deposit: ${paymentIntentId}`,
+        timestamp: new Date().toISOString(),
+        idempotencyKey: paymentIntentId,
+        hash: crypto.createHash('sha256').update(paymentIntentId).digest('hex')
+      });
+    });
+
+    res.json({ success: true, message: 'Deposit successful and balance updated' });
+  } catch (err: any) {
+    console.error('Stripe Confirm Error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -891,8 +967,6 @@ function resolveOptimalRail(requestedRailType: PaymentRail['id']): {
 
 // Execute Atomic ACID Transfer
 app.post('/api/ledger/transfer', async (req: Request, res: Response) => {
-  await acquireLock();
-
   try {
     const { 
       senderWalletId, 
@@ -906,260 +980,151 @@ app.post('/api/ledger/transfer', async (req: Request, res: Response) => {
     const transferAmount = Number(amount);
 
     if (isNaN(transferAmount) || transferAmount <= 0) {
-      releaseLock();
       return res.status(400).json({ error: 'Transfer amount must be a positive number.' });
     }
 
-    // Idempotency check
-    if (idempotencyKey && processedIdempotencyKeys.has(idempotencyKey)) {
-      releaseLock();
-      return res.status(409).json({ error: 'Duplicate transaction attempt detected (Idempotency Key match).' });
-    }
+    const result = await db.runTransaction(async (transaction) => {
+      const senderRef = db.collection('wallets').doc(senderWalletId);
+      const receiverRef = db.collection('wallets').doc(receiverWalletId);
+      const sysReserveRef = db.collection('wallets').doc('WAL-SYS-901');
+      const railsSnapshot = await transaction.get(db.collection('paymentRails'));
+      
+      const [senderDoc, receiverDoc, sysReserveDoc] = await Promise.all([
+        transaction.get(senderRef),
+        transaction.get(receiverRef),
+        transaction.get(sysReserveRef)
+      ]);
 
-    const sender = wallets.find((w) => w.id === senderWalletId);
-    const receiver = wallets.find((w) => w.id === receiverWalletId);
-    const sysReserve = wallets.find((w) => w.id === 'WAL-SYS-901')!;
+      const rails = railsSnapshot.docs.map(d => d.data() as PaymentRail);
 
-    if (!sender || !receiver) {
-      releaseLock();
-      return res.status(404).json({ error: 'Sender or Receiver wallet not found.' });
-    }
+      if (!senderDoc.exists || !receiverDoc.exists) {
+        throw new Error('Sender or Receiver wallet not found.');
+      }
 
-    if (sender.id === receiver.id) {
-      releaseLock();
-      return res.status(400).json({ error: 'Sender and Receiver wallets cannot be identical.' });
-    }
+      const sender = senderDoc.data() as Wallet;
+      const receiver = receiverDoc.data() as Wallet;
+      const sysReserve = sysReserveDoc.data() as Wallet;
 
-    if (sender.status !== 'ACTIVE') {
-      releaseLock();
-      return res.status(403).json({ error: `Sender account is ${sender.status}. Transfer rejected.` });
-    }
+      if (sender.id === receiver.id) {
+        throw new Error('Sender and Receiver wallets cannot be identical.');
+      }
 
-    // Smart Routing resolution
-    const routingResult = resolveOptimalRail(requestedRail || 'INTERNAL');
-    const executedRail = routingResult.selectedRail;
+      if (sender.status !== 'ACTIVE') {
+        throw new Error(`Sender account is ${sender.status}. Transfer rejected.`);
+      }
 
-    // Calculate Fees
-    const fee = (transferAmount * (executedRail.feePercentage / 100)) + executedRail.flatFee;
-    const totalDeduction = transferAmount + fee;
+      const resolveRail = (type: string) => {
+        const primary = rails.find(r => r.id === type);
+        if (!primary) {
+          const internal = rails.find(r => r.id === 'INTERNAL')!;
+          return { selectedRail: internal, wasRerouted: true, rerouteReason: 'Requested rail non-existent' };
+        }
+        if (primary.status === 'OPERATIONAL' && primary.latencyMs <= 400) {
+          return { selectedRail: primary, wasRerouted: false };
+        }
+        const backupType = primary.backupRail || 'INTERNAL';
+        const backup = rails.find(r => r.id === backupType) || rails.find(r => r.id === 'INTERNAL')!;
+        return { selectedRail: backup, wasRerouted: true, rerouteReason: 'Failover engaged' };
+      };
 
-    // ACID Balance Check (Available = balance - lockedBalance + overdraftLimit)
-    const availableBalance = sender.balance - sender.lockedBalance + sender.overdraftLimit;
+      const routingResult = resolveRail(requestedRail || 'INTERNAL');
+      const executedRail = routingResult.selectedRail;
 
-    if (availableBalance < totalDeduction) {
-      releaseLock();
-      return res.status(402).json({ 
-        error: `Insufficient funds. Available: ${availableBalance.toFixed(2)} ${sender.currency}, Required: ${totalDeduction.toFixed(2)} ${sender.currency} (including ${fee.toFixed(2)} fee)` 
-      });
-    }
+      const fee = (transferAmount * (executedRail.feePercentage / 100)) + executedRail.flatFee;
+      const totalDeduction = transferAmount + fee;
 
-    // ==========================================
-    // TRANSACTION LIMITS & CAP COMPLIANCE CHECK
-    // ==========================================
-    const spendingStats = getWalletSpendingStats(sender.id);
-    const proposedDaily = spendingStats.currentDailySpent + transferAmount;
-    const proposedMonthly = spendingStats.currentMonthlySpent + transferAmount;
+      const availableBalance = sender.balance - sender.lockedBalance + sender.overdraftLimit;
+      if (availableBalance < totalDeduction) {
+        throw new Error(`Insufficient funds. Available: ${availableBalance.toFixed(2)} ${sender.currency}`);
+      }
 
-    if (proposedDaily > spendingStats.dailyCap) {
-      const alertId = `ALERT-LIMIT-${Date.now().toString().slice(-6)}`;
-      anomalyAlerts.unshift({
-        id: alertId,
-        transactionId: `BLOCKED-${Date.now().toString().slice(-4)}`,
+      const txId = `TXN-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 899 + 100)}`;
+      const now = new Date().toISOString();
+      const idKey = idempotencyKey || `IDEMP-${txId}`;
+
+      const tx: Transaction = {
+        id: txId,
+        senderWalletId: sender.id,
         senderName: sender.ownerName,
+        receiverWalletId: receiver.id,
         receiverName: receiver.ownerName,
         amount: transferAmount,
+        fee: fee,
         currency: sender.currency,
-        severity: 'CRITICAL',
-        score: 98,
-        reason: `DAILY LIMIT BREACH: Transfer of ৳${transferAmount.toLocaleString()} exceeds Wallet Daily Cap (৳${spendingStats.dailyCap.toLocaleString()}). Spent today: ৳${spendingStats.currentDailySpent.toLocaleString()}.`,
-        recommendation: `Transaction blocked by Risk Engine. Increase daily limit for wallet ${sender.id} in Limits Module.`,
-        timestamp: new Date().toISOString()
+        status: 'SUCCESS',
+        requestedRail: requestedRail || 'INTERNAL',
+        executedRail: executedRail.id,
+        wasRerouted: routingResult.wasRerouted,
+        rerouteReason: routingResult.rerouteReason,
+        reference: reference || 'Ledger Transfer',
+        timestamp: now,
+        idempotencyKey: idKey,
+        hash: '',
+      };
+
+      tx.hash = crypto.createHash('sha256').update(JSON.stringify(tx)).digest('hex');
+
+      transaction.update(senderRef, {
+        balance: sender.balance - totalDeduction,
+        lastUpdated: now
       });
 
-      releaseLock();
-      return res.status(422).json({ 
-        error: `Transaction Rejected: Exceeds Wallet Daily Limit. Current Spent: ৳${spendingStats.currentDailySpent.toLocaleString()} / Daily Cap: ৳${spendingStats.dailyCap.toLocaleString()} BDT.`,
-        limitExceeded: true,
-        capType: 'DAILY'
+      transaction.update(receiverRef, {
+        balance: receiver.balance + transferAmount,
+        lastUpdated: now
       });
-    }
 
-    if (proposedMonthly > spendingStats.monthlyCap) {
-      const alertId = `ALERT-LIMIT-${Date.now().toString().slice(-6)}`;
-      anomalyAlerts.unshift({
-        id: alertId,
-        transactionId: `BLOCKED-${Date.now().toString().slice(-4)}`,
-        senderName: sender.ownerName,
-        receiverName: receiver.ownerName,
-        amount: transferAmount,
+      if (fee > 0 && sysReserveDoc.exists) {
+        transaction.update(sysReserveRef, {
+          balance: sysReserve.balance + fee,
+          lastUpdated: now
+        });
+      }
+
+      transaction.set(db.collection('transactions').doc(txId), tx);
+
+      const ldgDRef = db.collection('ledgerEntries').doc(`LDG-D-${txId}`);
+      const ldgCRef = db.collection('ledgerEntries').doc(`LDG-C-${txId}`);
+      
+      transaction.set(ldgDRef, {
+        id: `LDG-D-${txId}`,
+        transactionId: txId,
+        walletId: sender.id,
+        walletOwner: sender.ownerName,
+        type: 'DEBIT',
+        amount: totalDeduction,
+        balanceAfter: sender.balance - totalDeduction,
         currency: sender.currency,
-        severity: 'CRITICAL',
-        score: 98,
-        reason: `MONTHLY LIMIT BREACH: Transfer of ৳${transferAmount.toLocaleString()} exceeds Wallet Monthly Cap (৳${spendingStats.monthlyCap.toLocaleString()}). Spent this month: ৳${spendingStats.currentMonthlySpent.toLocaleString()}.`,
-        recommendation: `Transaction blocked by Risk Engine. Increase monthly limit for wallet ${sender.id} in Limits Module.`,
-        timestamp: new Date().toISOString()
+        timestamp: now,
+        description: `DEBIT for transfer to ${receiver.ownerName}`
       });
 
-      releaseLock();
-      return res.status(422).json({ 
-        error: `Transaction Rejected: Exceeds Wallet Monthly Limit. Current Spent: ৳${spendingStats.currentMonthlySpent.toLocaleString()} / Monthly Cap: ৳${spendingStats.monthlyCap.toLocaleString()} BDT.`,
-        limitExceeded: true,
-        capType: 'MONTHLY'
-      });
-    }
-
-    // Warning alert if threshold reached
-    if (proposedDaily >= spendingStats.dailyCap * (spendingStats.alertOnThresholdPercent / 100)) {
-      anomalyAlerts.unshift({
-        id: `ALERT-WARN-${Date.now().toString().slice(-6)}`,
-        transactionId: `TXN-WARN`,
-        senderName: sender.ownerName,
-        receiverName: receiver.ownerName,
-        amount: transferAmount,
-        currency: sender.currency,
-        severity: 'MEDIUM',
-        score: 70,
-        reason: `CAP WARNING THRESHOLD: ${sender.ownerName} reached ${(proposedDaily / spendingStats.dailyCap * 100).toFixed(1)}% of daily cap (৳${proposedDaily.toLocaleString()} / ৳${spendingStats.dailyCap.toLocaleString()}).`,
-        recommendation: `High velocity monitoring active for wallet ${sender.id}.`,
-        timestamp: new Date().toISOString()
-      });
-    }
-
-    // Prepare Transaction Object
-    const txId = `TXN-${Date.now().toString().slice(-6)}-${Math.floor(Math.random() * 899 + 100)}`;
-    const now = new Date().toISOString();
-    const idKey = idempotencyKey || `IDEMP-${txId}`;
-
-    const tx: Transaction = {
-      id: txId,
-      senderWalletId: sender.id,
-      senderName: sender.ownerName,
-      receiverWalletId: receiver.id,
-      receiverName: receiver.ownerName,
-      amount: transferAmount,
-      fee: fee,
-      currency: sender.currency,
-      status: 'SUCCESS',
-      requestedRail: requestedRail || 'INTERNAL',
-      executedRail: executedRail.id,
-      wasRerouted: routingResult.wasRerouted,
-      rerouteReason: routingResult.rerouteReason,
-      reference: reference || 'Ledger Transfer',
-      timestamp: now,
-      idempotencyKey: idKey,
-      hash: '',
-    };
-
-    tx.hash = calculateTxHash(tx);
-
-    // ATOMIC STATE MUTATION (ACID Step 1: Debit Sender)
-    sender.balance -= totalDeduction;
-    sender.lastUpdated = now;
-
-    // ATOMIC STATE MUTATION (ACID Step 2: Credit Receiver)
-    receiver.balance += transferAmount;
-    receiver.lastUpdated = now;
-
-    // ATOMIC STATE MUTATION (ACID Step 3: Credit System Fee Reserve)
-    if (fee > 0) {
-      sysReserve.balance += fee;
-      sysReserve.lastUpdated = now;
-    }
-
-    // ATOMIC STATE MUTATION (ACID Step 4: Ledger Lines)
-    const debitEntry: LedgerEntry = {
-      id: `LEDGER-${Date.now()}-1`,
-      transactionId: tx.id,
-      walletId: sender.id,
-      walletOwner: sender.ownerName,
-      type: 'DEBIT',
-      amount: totalDeduction,
-      balanceAfter: sender.balance,
-      currency: sender.currency,
-      timestamp: now,
-      description: `DEBIT for transfer to ${receiver.ownerName}${fee > 0 ? ` (incl. ${fee.toFixed(2)} fee)` : ''}`,
-    };
-
-    const creditEntry: LedgerEntry = {
-      id: `LEDGER-${Date.now()}-2`,
-      transactionId: tx.id,
-      walletId: receiver.id,
-      walletOwner: receiver.ownerName,
-      type: 'CREDIT',
-      amount: transferAmount,
-      balanceAfter: receiver.balance,
-      currency: receiver.currency,
-      timestamp: now,
-      description: `CREDIT from ${sender.ownerName} via ${executedRail.name}`,
-    };
-
-    ledgerEntries.unshift(debitEntry, creditEntry);
-
-    if (fee > 0) {
-      ledgerEntries.unshift({
-        id: `LEDGER-${Date.now()}-3`,
-        transactionId: tx.id,
-        walletId: sysReserve.id,
-        walletOwner: sysReserve.ownerName,
+      transaction.set(ldgCRef, {
+        id: `LDG-C-${txId}`,
+        transactionId: txId,
+        walletId: receiver.id,
+        walletOwner: receiver.ownerName,
         type: 'CREDIT',
-        amount: fee,
-        balanceAfter: sysReserve.balance,
-        currency: sysReserve.currency,
-        timestamp: now,
-        description: `Fee collected from ${tx.id} via ${executedRail.name}`,
-      });
-    }
-
-    transactions.unshift(tx);
-    processedIdempotencyKeys.add(idKey);
-
-    // Create Webhook Event
-    const webhookEv: WebhookEvent = {
-      id: `WH-${Date.now().toString().slice(-6)}`,
-      transactionId: tx.id,
-      merchantId: receiver.ownerType === 'merchant' ? receiver.id : sender.id,
-      eventType: 'transaction.success',
-      payload: { transactionId: tx.id, amount: tx.amount, sender: sender.ownerName, receiver: receiver.ownerName },
-      status: 'DELIVERED',
-      statusCode: 200,
-      timestamp: now,
-      signature: crypto.createHmac('sha256', 'payroute_secret_key').update(JSON.stringify(tx)).digest('hex'),
-    };
-    webhookEvents.unshift(webhookEv);
-
-    // Check for high-velocity / anomaly detection triggers
-    if (transferAmount > 100000 || routingResult.wasRerouted) {
-      const anomalyScore = transferAmount > 200000 ? 85 : 45;
-      anomalyAlerts.unshift({
-        id: `ALERT-${Date.now().toString().slice(-6)}`,
-        transactionId: tx.id,
-        senderName: sender.ownerName,
-        receiverName: receiver.ownerName,
         amount: transferAmount,
-        currency: sender.currency,
-        severity: anomalyScore > 80 ? 'CRITICAL' : routingResult.wasRerouted ? 'MEDIUM' : 'LOW',
-        score: anomalyScore,
-        reason: routingResult.wasRerouted 
-          ? `High value transaction auto-rerouted due to gateway degradation: ${routingResult.rerouteReason}` 
-          : `Large volume single transfer exceeding BDT 100,000 baseline.`,
-        recommendation: anomalyScore > 80 ? 'Require 2FA AML verification for recipient wallet.' : 'Log to audit compliance ledger.',
+        balanceAfter: receiver.balance + transferAmount,
+        currency: receiver.currency,
         timestamp: now,
+        description: `CREDIT from ${sender.ownerName}`
       });
-    }
 
-    releaseLock();
-
-    return res.json({
-      success: true,
-      transaction: tx,
-      debitEntry,
-      creditEntry,
-      senderBalance: sender.balance,
-      receiverBalance: receiver.balance,
+      return { tx, fee };
     });
+
+    res.json({
+      success: true,
+      message: 'Transaction processed and finalized in ACID ledger.',
+      transaction: result.tx,
+      fee: result.fee
+    });
+
   } catch (err: any) {
-    releaseLock();
-    return res.status(500).json({ error: `ACID Execution Error: ${err.message}` });
+    console.error('Transfer error:', err);
+    res.status(500).json({ error: err.message || 'Transaction failed' });
   }
 });
 
@@ -1168,8 +1133,9 @@ app.post('/api/ledger/transfer', async (req: Request, res: Response) => {
 // ==========================================
 
 // Get all wallet transaction limits and current spending stats
-app.get('/api/ledger/limits', (req: Request, res: Response) => {
-  const limits = wallets.map(w => getWalletSpendingStats(w.id));
+app.get('/api/ledger/limits', async (req: Request, res: Response) => {
+  const wallets = await getWallets();
+  const limits = await Promise.all(wallets.map(w => getWalletSpendingStats(w.id)));
   res.json({ limits });
 });
 
@@ -2137,8 +2103,80 @@ app.post('/api/gmail/send', async (req: Request, res: Response) => {
 });
 
 // Get Gmail Notification Logs
-app.get('/api/gmail/logs', (req: Request, res: Response) => {
-  res.json({ logs: gmailNotificationLogs });
+app.get('/api/gmail/logs', async (req: Request, res: Response) => {
+  const logs = await getGmailLogs();
+  res.json({ logs });
+});
+
+// ==========================================
+// SMS GATEWAY (TWILIO) API ROUTES
+// ==========================================
+
+app.post('/api/sms/send', async (req: Request, res: Response) => {
+  const { to, message } = req.body;
+
+  if (!to || !message) {
+    return res.status(400).json({ error: 'Recipient phone and message are required.' });
+  }
+
+  const accountSid = process.env.TWILIO_ACCOUNT_SID;
+  const authToken = process.env.TWILIO_AUTH_TOKEN;
+  const fromNumber = process.env.TWILIO_PHONE_NUMBER;
+
+  if (!accountSid || !authToken || !fromNumber) {
+    return res.status(500).json({ 
+      error: 'Twilio SMS Gateway is not configured.',
+      details: 'Please set TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, and TWILIO_PHONE_NUMBER in environment variables.'
+    });
+  }
+
+  try {
+    const client = twilio(accountSid, authToken);
+    const result = await client.messages.create({
+      body: message,
+      from: fromNumber,
+      to: to
+    });
+
+    const logEntry: SMSNotificationLog = {
+      id: `SMS-LOG-${Date.now().toString().slice(-6)}`,
+      recipientPhone: to,
+      message,
+      status: 'SENT',
+      sentAt: new Date().toISOString(),
+      sid: result.sid
+    };
+
+    smsNotificationLogs.unshift(logEntry);
+
+    res.json({
+      success: true,
+      message: `SMS sent to ${to} successfully!`,
+      sid: result.sid,
+      logEntry
+    });
+  } catch (err: any) {
+    console.error('Twilio SMS error:', err);
+    const failedLog: SMSNotificationLog = {
+      id: `SMS-LOG-${Date.now().toString().slice(-6)}`,
+      recipientPhone: to,
+      message,
+      status: 'FAILED',
+      sentAt: new Date().toISOString(),
+      error: err.message
+    };
+    smsNotificationLogs.unshift(failedLog);
+
+    res.status(500).json({ 
+      error: err.message || 'Failed to send SMS',
+      details: 'Check Twilio credentials and recipient number format.'
+    });
+  }
+});
+
+app.get('/api/sms/logs', async (req: Request, res: Response) => {
+  const logs = await getSMSLogs();
+  res.json({ logs });
 });
 
 // 404 Handler for API routes to prevent falling through to SPA fallback

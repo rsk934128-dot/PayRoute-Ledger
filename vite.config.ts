@@ -11,7 +11,7 @@ export default defineConfig(() => {
       tailwindcss(),
       VitePWA({
         registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'pwa-192x192.jpg', 'pwa-512x512.jpg', 'apple-touch-icon.jpg'],
+        includeAssets: ['favicon.ico', 'pwa-192x192.jpg', 'pwa-512x512.jpg', 'apple-touch-icon.jpg', 'screenshot-mobile-1.jpg', 'screenshot-desktop-1.jpg'],
         manifest: {
           id: '/',
           name: 'PayRoute Ledger',
@@ -22,6 +22,40 @@ export default defineConfig(() => {
           display: 'standalone',
           start_url: '/',
           scope: '/',
+          orientation: 'portrait',
+          categories: ['finance', 'business', 'utilities'],
+          screenshots: [
+            {
+              src: '/screenshot-mobile-1.jpg',
+              sizes: '1080x1920',
+              type: 'image/jpeg',
+              form_factor: 'narrow',
+              label: 'Dashboard Mobile View'
+            },
+            {
+              src: '/screenshot-desktop-1.jpg',
+              sizes: '1920x1080',
+              type: 'image/jpeg',
+              form_factor: 'wide',
+              label: 'Ledger Desktop View'
+            }
+          ],
+          shortcuts: [
+            {
+              name: 'Ledger',
+              short_name: 'Ledger',
+              description: 'View transaction history',
+              url: '/?tab=ledger',
+              icons: [{ src: '/pwa-192x192.jpg', sizes: '192x192' }]
+            },
+            {
+              name: 'Electricity Bill',
+              short_name: 'Bills',
+              description: 'Pay utility bills',
+              url: '/?tab=electricity',
+              icons: [{ src: '/pwa-192x192.jpg', sizes: '192x192' }]
+            }
+          ],
           icons: [
             {
               src: '/pwa-192x192.jpg',

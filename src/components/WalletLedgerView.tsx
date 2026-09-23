@@ -79,8 +79,8 @@ interface WalletLedgerViewProps {
   }) => Promise<{ success: boolean; error?: string }>;
 }
 
+import { db } from '../lib/firebase';
 import { 
-  db, 
   collection, 
   addDoc, 
   onSnapshot, 
@@ -90,7 +90,7 @@ import {
   doc,
   updateDoc,
   deleteDoc
-} from '../lib/firebase';
+} from 'firebase/firestore';
 import { RecurringTransfer, RecurringFrequency } from '../types';
 
 export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
@@ -311,6 +311,89 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
       navigator.clipboard.writeText(shareData.text + ' ' + shareData.url);
       alert(lang === 'bn' ? 'তথ্য ক্লিপবোর্ডে কপি করা হয়েছে!' : 'Information copied to clipboard!');
     }
+  };
+
+  const handleExportPDF = () => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) return;
+
+    const title = lang === 'bn' ? 'PayRoute লেনদেন রিপোর্ট' : 'PayRoute Transaction Report';
+    const subTitle = lang === 'bn' ? 'ফিল্টারকৃত লেনদেনের তালিকা' : 'Filtered Transaction List';
+    
+    let tableHtml = `
+      <html>
+        <head>
+          <title>${title}</title>
+          <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;700&display=swap');
+            body { font-family: 'Inter', sans-serif; padding: 40px; color: #1e293b; background: #fff; line-height: 1.5; }
+            .header { border-bottom: 2px solid #e2e8f0; margin-bottom: 30px; padding-bottom: 20px; }
+            h1 { margin: 0; font-size: 24px; color: #0f172a; }
+            p { margin: 5px 0; color: #64748b; font-size: 14px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+            th { text-align: left; padding: 12px 8px; border-bottom: 2px solid #cbd5e1; font-size: 10px; text-transform: uppercase; color: #475569; letter-spacing: 0.05em; }
+            td { padding: 12px 8px; border-bottom: 1px solid #e2e8f0; font-size: 11px; vertical-align: middle; }
+            .amount { text-align: right; font-weight: bold; font-family: 'Courier New', monospace; }
+            .status { font-weight: bold; font-size: 9px; text-transform: uppercase; padding: 3px 6px; border-radius: 4px; border: 1px solid #cbd5e1; display: inline-block; min-width: 60px; text-align: center; }
+            .success { color: #059669; background: #ecfdf5; border-color: #10b981; }
+            .failed { color: #dc2626; background: #fef2f2; border-color: #ef4444; }
+            .pending { color: #d97706; background: #fffbeb; border-color: #f59e0b; }
+            .footer { margin-top: 50px; font-size: 9px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 20px; text-align: center; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>${title}</h1>
+            <p>${subTitle}</p>
+            <div style="display: flex; justify-content: space-between; margin-top: 15px;">
+              <div>
+                <p><strong>Generated:</strong> ${new Date().toLocaleString(lang === 'bn' ? 'bn-BD' : 'en-US')}</p>
+                <p><strong>Records:</strong> ${filteredTransactions.length}</p>
+              </div>
+              <div style="text-align: right;">
+                <p><strong>PayRoute Ledger</strong></p>
+                <p>Security-First Payment Engine</p>
+              </div>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>TX ID</th>
+                <th>Sender</th>
+                <th>Receiver</th>
+                <th style="text-align: right;">Amount</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filteredTransactions.map(tx => `
+                <tr>
+                  <td>${new Date(tx.timestamp).toLocaleDateString(lang === 'bn' ? 'bn-BD' : 'en-US')}</td>
+                  <td style="font-family: monospace;">${tx.id.substring(0, 10)}</td>
+                  <td>${tx.senderName}</td>
+                  <td>${tx.receiverName}</td>
+                  <td class="amount">৳${tx.amount.toLocaleString()}</td>
+                  <td><span class="status ${tx.status.toLowerCase()}">${tx.status}</span></td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+          <div class="footer">
+            PayRoute Transaction Ledger Report. Confidential - For Internal Use Only.
+          </div>
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `;
+
+    printWindow.document.write(tableHtml);
+    printWindow.document.close();
   };
 
   const handleShareReferral = async () => {
@@ -770,14 +853,8 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
 
           <div className="h-[280px] w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={trendData}>
-                <defs>
-                  <linearGradient id="colorVolume" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#10b981" stopOpacity={0.3}/>
-                    <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} />
+              <BarChart data={trendData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#1e293b" vertical={false} opacity={0.3} />
                 <XAxis 
                   dataKey="date" 
                   axisLine={false} 
@@ -792,20 +869,22 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
                   tickFormatter={(value) => `৳${value >= 1000 ? (value / 1000).toFixed(1) + 'k' : value}`}
                 />
                 <Tooltip 
+                  cursor={{ fill: 'rgba(255, 255, 255, 0.05)' }}
                   contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '12px', fontSize: '12px' }}
                   itemStyle={{ color: '#10b981' }}
                   formatter={(value: number) => [`৳${value.toLocaleString()}`, lang === 'bn' ? 'ভলিউম' : 'Volume']}
                 />
-                <Area 
-                  type="monotone" 
+                <Bar 
                   dataKey="volume" 
-                  stroke="#10b981" 
-                  strokeWidth={3}
-                  fillOpacity={1} 
-                  fill="url(#colorVolume)" 
+                  fill="#10b981" 
+                  radius={[4, 4, 0, 0]} 
                   animationDuration={1500}
-                />
-              </AreaChart>
+                >
+                  {trendData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.volume > 0 ? '#10b981' : '#1e293b'} fillOpacity={0.8} />
+                  ))}
+                </Bar>
+              </BarChart>
             </ResponsiveContainer>
           </div>
         </div>
@@ -1479,6 +1558,13 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
                 : 'Real-time record of all successful and failed transactions across the network.'}
             </p>
           </div>
+          <button
+            onClick={handleExportPDF}
+            className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold rounded-xl transition-all flex items-center gap-2 border border-slate-700 shadow-lg active:scale-95"
+          >
+            <Download className="w-4 h-4 text-indigo-400" />
+            {lang === 'bn' ? 'পিডিএফ ডাউনলোড' : 'Download PDF'}
+          </button>
         </div>
 
         <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60">
@@ -1517,13 +1603,21 @@ export const WalletLedgerView: React.FC<WalletLedgerViewProps> = ({
                       ৳{tx.amount.toLocaleString()}
                     </td>
                     <td className="p-3">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border flex items-center w-fit gap-1 ${
                         tx.status === 'SUCCESS' 
                           ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' 
                           : tx.status === 'FAILED' 
                           ? 'bg-rose-500/20 text-rose-300 border-rose-500/30'
-                          : 'bg-slate-800 text-slate-400 border-slate-700'
+                          : tx.status === 'ROLLED_BACK'
+                          ? 'bg-slate-800 text-slate-400 border-slate-700'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
                       }`}>
+                        <span className={`w-1 h-1 rounded-full ${
+                          tx.status === 'SUCCESS' ? 'bg-emerald-400' :
+                          tx.status === 'FAILED' ? 'bg-rose-400' :
+                          tx.status === 'ROLLED_BACK' ? 'bg-slate-500' :
+                          'bg-amber-400 animate-pulse'
+                        }`} />
                         {tx.status}
                       </span>
                     </td>

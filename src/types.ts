@@ -267,6 +267,16 @@ export interface GmailNotificationLog {
   error?: string;
 }
 
+export interface SMSNotificationLog {
+  id: string;
+  recipientPhone: string;
+  message: string;
+  status: 'SENT' | 'FAILED';
+  sentAt: string;
+  sid?: string;
+  error?: string;
+}
+
 export type ElectricityBillPayment = {
   id: string;
   userId?: string;

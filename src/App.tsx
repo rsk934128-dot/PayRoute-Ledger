@@ -26,6 +26,7 @@ import { BusinessRoadmapView } from './components/BusinessRoadmapView';
 import { MobileAppSimulatorView } from './components/MobileAppSimulatorView';
 import { DriveExportModal } from './components/DriveExportModal';
 import { GmailNotificationModal } from './components/GmailNotificationModal';
+import { SMSNotificationModal } from './components/SMSNotificationModal';
 import { 
   Wallet as WalletIcon, 
   Zap, 
@@ -54,7 +55,7 @@ export default function App() {
   const [anomalyAlerts, setAnomalyAlerts] = useState<AnomalyAlert[]>([]);
 
   // System Administrator User Profile State
-  const [adminEmail, setAdminEmail] = useState<string>('rubels1k994@gmail.com');
+  const [adminEmail, setAdminEmail] = useState<string>('khokumoni30@gmail.com');
 
   // Auto-Sync & Real-Time Sync State
   const [autoSync, setAutoSync] = useState<boolean>(true);
@@ -66,6 +67,7 @@ export default function App() {
   const [driveEmail, setDriveEmail] = useState<string>('');
   const [isExportModalOpen, setIsExportModalOpen] = useState<boolean>(false);
   const [isGmailModalOpen, setIsGmailModalOpen] = useState<boolean>(false);
+  const [isSMSModalOpen, setIsSMSModalOpen] = useState<boolean>(false);
 
   const [isLoading, setIsLoading] = useState(true);
   const prevTransactionsRef = useRef<Transaction[]>([]);
@@ -196,14 +198,23 @@ export default function App() {
   };
 
   useEffect(() => {
+    // Listen for tab changes from shortcuts
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab');
+    if (tabParam) {
+      if (['ledger', 'electricity', 'routing', 'ai'].includes(tabParam)) {
+        setActiveTab(tabParam as any);
+      }
+    }
+
     // Short delay to ensure server is ready
     const timer = setTimeout(() => {
       fetchData();
       checkGoogleDriveStatus();
     }, 1000);
     
-    // registerServiceWorker(); // Disabled manual registration to avoid conflict with VitePWA
-    registerServiceWorker(); // Actually, let's keep it but handle errors gracefully
+    // We let VitePWA handle service worker registration via its autoUpdate plugin
+    // to avoid conflicts with manual registration logic.
 
     // Check existing notification permission
     if ('Notification' in window && Notification.permission === 'granted') {
@@ -375,6 +386,7 @@ export default function App() {
         onDisconnectDrive={handleDisconnectDrive}
         onOpenExportModal={() => setIsExportModalOpen(true)}
         onOpenGmailModal={() => setIsGmailModalOpen(true)}
+        onOpenSMSModal={() => setIsSMSModalOpen(true)}
         onRefreshData={fetchData}
         autoSync={autoSync}
         setAutoSync={setAutoSync}
@@ -630,7 +642,16 @@ export default function App() {
         isOpen={isGmailModalOpen}
         onClose={() => setIsGmailModalOpen(false)}
         lang={lang}
+        driveConnected={driveConnected}
+        onConnectDrive={handleConnectDrive}
         defaultRecipientEmail={adminEmail}
+      />
+
+      {/* SMS Notification Modal */}
+      <SMSNotificationModal
+        isOpen={isSMSModalOpen}
+        onClose={() => setIsSMSModalOpen(false)}
+        lang={lang}
       />
     </div>
   );

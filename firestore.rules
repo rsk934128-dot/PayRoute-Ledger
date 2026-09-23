@@ -1,14 +1,106 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /billPayments/{id} {
-      allow read, write: if true;
-    }
-    match /recurringTransfers/{id} {
-      allow read, write: if true;
-    }
+    // -------------------------------------------------------------------------
+    // 0. GLOBAL SAFETY NET (DEFAULT DENY)
+    // -------------------------------------------------------------------------
     match /{document=**} {
       allow read, write: if false;
+    }
+
+    // -------------------------------------------------------------------------
+    // 1. PRIMITIVE HELPERS
+    // -------------------------------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isEmailVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      // In this app, we trust the hardcoded admin email for demo purposes, 
+      // but hardened rules would check a trusted /admins collection.
+      return isEmailVerified() && request.auth.token.email == 'khokumoni30@gmail.com';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // -------------------------------------------------------------------------
+    // 2. ENTITY VALIDATION HELPERS
+    // -------------------------------------------------------------------------
+    function isValidWallet(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.accountNo is string && data.accountNo.size() <= 50 &&
+             data.balance is number &&
+             data.status in ['ACTIVE', 'SUSPENDED', 'FROZEN'];
+    }
+
+    function isValidTransaction(data) {
+      return data.id is string && data.id.size() <= 100 &&
+             data.senderWalletId is string &&
+             data.receiverWalletId is string &&
+             data.amount is number && data.amount > 0 &&
+             data.timestamp is string;
+    }
+
+    // -------------------------------------------------------------------------
+    // 3. COLLECTION MATCH BLOCKS
+    // -------------------------------------------------------------------------
+
+    match /wallets/{walletId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin() && isValidWallet(incoming());
+    }
+
+    match /paymentRails/{railId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /transactions/{txId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && isValidTransaction(incoming());
+      allow update, delete: if isAdmin();
+    }
+
+    match /ledgerEntries/{entryId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn(); // Usually created via transaction logic
+      allow update, delete: if isAdmin();
+    }
+
+    match /webhookEvents/{eventId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /anomalyAlerts/{alertId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    match /gmailLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /smsLogs/{logId} {
+      allow read, write: if isAdmin();
+    }
+    
+    match /recurringTransfers/{transferId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
     }
   }
 }
